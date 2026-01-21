@@ -101,36 +101,47 @@ async def dual_passage_rerank(
     nodes: List[Dict[str, str]],
     use_model_func,
     knowledge_graph_inst,
-    topn=5
+    vlm_weight=0.5,
+    topn=5,
 ):
     """
     Performs dual-passage reranking by considering:
     1. Vision-Language Model (VLM) listwise ranking
     2. Node degree from the knowledge graph (graph importance)
 
-    Returns a final reranked list combining both scores equally.
+    Args:
+        image_path: Path to the image
+        painting_metadata: Metadata about the painting
+        nodes: List of nodes to rerank
+        use_model_func: Function to use the model
+        knowledge_graph_inst: Knowledge graph instance
+        topn: Number of top results to return
+        vlm_weight: Weight for VLM scores (0-1). Node degree weight will be (1-vlm_weight)
+
+    Returns a final reranked list combining both scores with specified weights.
     """
     if not nodes:
         return []
 
-        # Summarize long descriptions
+    # Summarize long descriptions
     for node in nodes:
         node["description"] = await summarize_description(node.get("description", "UNKNOWN"), use_model_func)
         if "source_id" in node:
             del node["source_id"]
 
     # Step 1: Get VLM listwise ranking scores
-    vlm_ranked_nodes, vlm_rank_scores = await rerank_nodes_with_vlm(image_path, painting_metadata, nodes, use_model_func)
+    vlm_ranked_nodes, vlm_rank_scores = await rerank_nodes_with_vlm(image_path, painting_metadata, nodes, use_model_func )
     # Step 2: Compute node degree ranking scores
     degree_scores = {node["entity_name"]: node["rank"] for node in nodes}
 
     vlm_rank_scores = softmax_normalize(vlm_rank_scores)
     degree_scores = softmax_normalize(degree_scores)
-
-    # Step 3: Combine rankings with equal weight (0.5 * VLM + 0.5 * Node Degree)
+    
+    # Step 3: Combine rankings with specified weights
+    degree_weight = 1 - vlm_weight
     final_scores = {
-        node["entity_name"]: 0.5 * vlm_rank_scores.get(node["entity_name"], 0) +
-                             0.5 * degree_scores.get(node["entity_name"], 0)
+        node["entity_name"]: vlm_weight * vlm_rank_scores.get(node["entity_name"], 0) +
+                            degree_weight * degree_scores.get(node["entity_name"], 0)
         for node in nodes
     }
 

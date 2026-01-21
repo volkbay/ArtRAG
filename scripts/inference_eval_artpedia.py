@@ -114,7 +114,7 @@ def run_inference(WORKING_DIR, llm_model_func, data_type, retrieval_strategy, sh
 
         # Run inference with LightRAG model
         generated_description,retrieved_context,rerank_context = rag.query(
-            query, param=QueryParam(mode=retrieval_strategy),data_type=data_type, shot_number=shot_number)
+            query, param=QueryParam(mode=retrieval_strategy),data_type=data_type, shot_number=shot_number, vlm_weight=args.vlm_weight)
         # Store the result
         print("generated_description: ", generated_description)
         results.append({
@@ -299,6 +299,13 @@ if __name__ == "__main__":
     parser.add_argument('--mp',  action='store_true',
                         help='if using multiprocessing. Not working yet')
     parser.add_argument('--data_num', type=int, default=100,)
+
+    parser.add_argument(
+        '--vlm_weight',
+        type=float,
+        default=0.5,
+        help='Weight for VLM scores'
+    )
 
     parser.add_argument(
         '--image_dir',

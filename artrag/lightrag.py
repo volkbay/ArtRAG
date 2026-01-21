@@ -245,12 +245,12 @@ class LightRAG:
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
         await asyncio.gather(*tasks)
 
-    def query(self, query: str, data_type="SemArtv2", shot_number=1,fewshot_type="SM_fewshot", param: QueryParam = QueryParam()):
+    def query(self, query: str, data_type="SemArtv2", shot_number=1,fewshot_type="SM_fewshot", param: QueryParam = QueryParam(), vlm_weight=0.5):
         loop = always_get_an_event_loop()
         param.data_type = data_type
         param.fewshot_type = fewshot_type
         param.shot_number = shot_number
-
+        param.vlm_weight = vlm_weight
         return loop.run_until_complete(self.aquery(query, param))
 
     async def aquery(self, query: str, param: QueryParam = QueryParam()):
@@ -260,7 +260,6 @@ class LightRAG:
                 query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
-                # self.relationships_vdb,
                 self.text_chunks,
                 param,
                 asdict(self),

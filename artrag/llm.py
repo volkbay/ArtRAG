@@ -4,14 +4,12 @@ import json
 import aioboto3
 import numpy as np
 from typing import List, Optional
-import ollama
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
 )
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from .base import BaseKVStorage
 from .utils import compute_args_hash, wrap_embedding_func_with_attrs

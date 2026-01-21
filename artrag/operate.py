@@ -405,7 +405,6 @@ async def local_query(
     input_: Union[str, dict],
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
-    # relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
     global_config: dict,
@@ -531,7 +530,7 @@ async def _build_local_query_context(
     entities_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
-    use_model_func
+    use_model_func,
 ):
     """
     Build the local query context, including entities and relationships, and rerank them based on the visual-language model (VLM) scores.
@@ -563,7 +562,7 @@ async def _build_local_query_context(
     entities_context, relations_context = generate_context_sections(node_datas, use_relations)
 
     # Rerank the nodes based on visual-language model (VLM) scores.
-    reranked_nodes, reranked_edges = await dual_passage_rerank(query_image, query_text, node_datas, use_model_func,knowledge_graph_inst)
+    reranked_nodes, reranked_edges = await dual_passage_rerank(query_image, query_text, node_datas, use_model_func, knowledge_graph_inst, query_param.vlm_weight)
     rerank_entities_context, rerank_relations_context = generate_context_sections(reranked_nodes, reranked_edges)
     logger.info(
         f"After reranking Local query uses {len(reranked_nodes)} entites, {len(reranked_edges)} relations"

@@ -65,9 +65,9 @@ def run_ArtRAG_inference(WORKING_DIR, llm_model_func, args):
 
     semartv1_types = {"SemArtv1-content", "SemArtv1-context"}
     if args.data_type in semartv1_types:
-        directory = "../data/SemArt/semartv1_test_overlap_with_captions.csv"
+        directory = "../../data/SemArt/semartv1_test_overlap_with_captions.csv"
     elif args.data_type == "SemArtv2":
-        directory = "../data/SemArt/semartv2_test_overlap_with_captions.csv"
+        directory = "../../data/SemArt/semartv2_test_overlap_with_captions.csv"
     print("dataset type: {}, question type: {}".format(args.data_type, args.question_type))
 
     # Load the data from the specified directory
@@ -85,7 +85,7 @@ def run_ArtRAG_inference(WORKING_DIR, llm_model_func, args):
         title = row['TITLE']
         technique = row['TECHNIQUE']
         Timeframe = row['TIMEFRAME']
-        img = f"../data/SemArt/Images/{row['IMAGE_FILE']}"
+        img = f"../../data/SemArt/Images/{row['IMAGE_FILE']}"
 
         semartv1_content_types = {"SemArtv1-content", "SemArtv1-context"}
         if args.data_type in semartv1_content_types:
@@ -132,7 +132,7 @@ def run_ArtRAG_inference(WORKING_DIR, llm_model_func, args):
 
         # Run inference with LightRAG model
         generated_description , retrieved_context, rerank_context = rag.query(
-            query, param=QueryParam(mode=args.retrieval_strategy), data_type=args.data_type, shot_number=args.shot_number, fewshot_type=args.fewshot_type)
+            query, param=QueryParam(mode=args.retrieval_strategy), data_type=args.data_type, shot_number=args.shot_number, fewshot_type=args.fewshot_type, vlm_weight=args.vlm_weight)
         # Store the result
         # import pdb; pdb.set_trace()
         print("generated_description: ", generated_description)
@@ -195,9 +195,9 @@ def evaluate_descriptions_semart(generated_descriptions_file, data_type, model_n
 
     semartv1_types = {"SemArtv1-content", "SemArtv1-context"}
     if data_type in semartv1_types:
-        ground_truth_file = "../data/SemArt/semartv1_test_overlap_with_captions.csv"
+        ground_truth_file = "../../data/SemArt/semartv1_test_overlap_with_captions.csv"
     elif data_type == "SemArtv2":
-        ground_truth_file = "../data/SemArt/semartv2_test_overlap_with_captions.csv"
+        ground_truth_file = "../../data/SemArt/semartv2_test_overlap_with_captions.csv"
 
     # Load ground truth descriptions
     ground_truth_descriptions = {}
@@ -210,13 +210,13 @@ def evaluate_descriptions_semart(generated_descriptions_file, data_type, model_n
 
         if data_type == "SemArtv1-content":
             full_description = content
-            image_dir = "../data/SemArt/Images"
+            image_dir = "../../data/SemArt/Images"
         elif data_type == "SemArtv1-context":
             full_description = context
-            image_dir = "../data/SemArt/Images"
+            image_dir = "../../data/SemArt/Images"
         elif data_type == "SemArtv2":
             full_description = content + form + context
-            image_dir = "../data/SemArt/Images"
+            image_dir = "../../data/SemArt/Images"
         ground_truth_descriptions[row['IMAGE_FILE']] = full_description
     # Prepare lists for evaluation
     predicts = []
@@ -357,7 +357,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--image_dir',
         type=str,
-        default='../data/SemArt/Images',
+        default='../../data/SemArt/Images',
         help='Directory of images, with the filenames as image ids.'
     )
     
@@ -381,6 +381,13 @@ if __name__ == "__main__":
         default="description",
         choices=["description", "cultural&histroical", "Theme", "style&technique","Movement&school", "artist"],
         help='Type of question to generate: description or question'
+    )
+
+    parser.add_argument(
+        '--vlm_weight',
+        type=float,
+        default=0.5,
+        help='Weight for VLM scores'
     )
 
 
