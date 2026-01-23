@@ -17,6 +17,16 @@ import base64
 import pdb
 from functools import lru_cache
 
+# Try to load .env file if python-dotenv is available
+try:
+    from dotenv import load_dotenv
+    # Load .env file if it exists (won't override existing env vars)
+    load_dotenv(dotenv_path=".env", override=False)
+    # Also try loading from parent directory (in case script is in subdirectory)
+    load_dotenv(dotenv_path="../.env", override=False)
+except ImportError:
+    pass  # python-dotenv not installed, rely on environment variables
+
 from openai import (
     AsyncOpenAI,
     APIConnectionError,
@@ -47,8 +57,14 @@ async def openai_complete_if_cache(
     system_image_paths: Optional[str] = None,
     **kwargs,
 ) -> str:
+    # Use provided api_key, or fall back to environment variable
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
+    elif not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError(
+            "OPENAI_API_KEY not found. Please set it in environment variables or .env file, "
+            "or pass it as api_key parameter."
+        )
 
     openai_async_client = (
         AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
@@ -117,17 +133,20 @@ async def bedrock_complete_if_cache(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    aws_region=None,
     **kwargs,
 ) -> str:
-    os.environ["AWS_ACCESS_KEY_ID"] = os.environ.get(
-        "AWS_ACCESS_KEY_ID", aws_access_key_id
-    )
-    os.environ["AWS_SECRET_ACCESS_KEY"] = os.environ.get(
-        "AWS_SECRET_ACCESS_KEY", aws_secret_access_key
-    )
-    os.environ["AWS_SESSION_TOKEN"] = os.environ.get(
-        "AWS_SESSION_TOKEN", aws_session_token
-    )
+    # Only set environment variables if they are provided and not None
+    # If not provided, boto3 will use default credentials (IAM role, ~/.aws/credentials, etc.)
+    if aws_access_key_id is not None:
+        os.environ["AWS_ACCESS_KEY_ID"] = aws_access_key_id
+    if aws_secret_access_key is not None:
+        os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret_access_key
+    if aws_session_token is not None:
+        os.environ["AWS_SESSION_TOKEN"] = aws_session_token
+    
+    # Get AWS region from parameter, environment variable, or use default
+    region = aws_region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
 
     # Fix message history format
     messages = []
@@ -170,7 +189,7 @@ async def bedrock_complete_if_cache(
 
     # Call model via Converse API
     session = aioboto3.Session()
-    async with session.client("bedrock-runtime") as bedrock_async_client:
+    async with session.client("bedrock-runtime", region_name=region) as bedrock_async_client:
         try:
             response = await bedrock_async_client.converse(**args, **kwargs)
         except Exception as e:
@@ -330,7 +349,7 @@ async def bedrock_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     return await bedrock_complete_if_cache(
-        "anthropic.claude-3-haiku-20240307-v1:0",
+        "google.gemma-3-27b-it",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
@@ -376,8 +395,14 @@ async def openai_embedding(
     base_url: str = None,
     api_key: str = None,
 ) -> np.ndarray:
+    # Use provided api_key, or fall back to environment variable
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
+    elif not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError(
+            "OPENAI_API_KEY not found. Please set it in environment variables or .env file, "
+            "or pass it as api_key parameter."
+        )
 
     openai_async_client = (
         AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
@@ -400,19 +425,22 @@ async def bedrock_embedding(
     aws_access_key_id=None,
     aws_secret_access_key=None,
     aws_session_token=None,
+    aws_region=None,
 ) -> np.ndarray:
-    os.environ["AWS_ACCESS_KEY_ID"] = os.environ.get(
-        "AWS_ACCESS_KEY_ID", aws_access_key_id
-    )
-    os.environ["AWS_SECRET_ACCESS_KEY"] = os.environ.get(
-        "AWS_SECRET_ACCESS_KEY", aws_secret_access_key
-    )
-    os.environ["AWS_SESSION_TOKEN"] = os.environ.get(
-        "AWS_SESSION_TOKEN", aws_session_token
-    )
+    # Only set environment variables if they are provided and not None
+    # If not provided, boto3 will use default credentials (IAM role, ~/.aws/credentials, etc.)
+    if aws_access_key_id is not None:
+        os.environ["AWS_ACCESS_KEY_ID"] = aws_access_key_id
+    if aws_secret_access_key is not None:
+        os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret_access_key
+    if aws_session_token is not None:
+        os.environ["AWS_SESSION_TOKEN"] = aws_session_token
+    
+    # Get AWS region from parameter, environment variable, or use default
+    region = aws_region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
 
     session = aioboto3.Session()
-    async with session.client("bedrock-runtime") as bedrock_async_client:
+    async with session.client("bedrock-runtime", region_name=region) as bedrock_async_client:
         if (model_provider := model.split(".")[0]) == "amazon":
             embed_texts = []
             for text in texts:

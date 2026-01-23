@@ -1,11 +1,14 @@
 import asyncio
+import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Type, cast, Any, Dict, Union
+from pathlib import Path
+from typing import Type, cast, Any, Dict, Union, List, Optional
 import pdb
-from .prompt_art import GRAPH_FIELD_SEP
+from .prompt_art import GRAPH_FIELD_SEP, PROMPTS
 
 from .llm import (
     gpt_4o_mini_complete,
@@ -33,6 +36,8 @@ from .utils import (
     convert_response_to_json,
     logger,
     set_logger,
+    encode_image_to_base64,
+    validate_image_file,
 )
 from .base import (
     BaseGraphStorage,
@@ -92,6 +97,9 @@ class LightRAG:
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
     llm_model_kwargs: dict = field(default_factory=dict)
+    
+    # Vision model (optional, for multimodal queries)
+    vision_model_func: Optional[callable] = field(default=None)
 
     # storage
     key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
@@ -294,6 +302,259 @@ class LightRAG:
                 continue
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
         await asyncio.gather(*tasks)
+
+    async def aquery_with_agentic_reasoning(
+        self,
+        query: str,
+        multimodal_content: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        mode: str = "local",
+        system_prompt: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        """
+        Agentic multimodal query with planning and custom final generation.
+
+        Flow:
+        1) Generate retrieval + generation plans from multimodal query.
+        2) Retrieve context using LightRAG (only_need_context=True).
+        3) Build final prompt with generation plan and call LLM/VLM.
+
+        Args:
+            query: User query text
+            multimodal_content: Optional list of multimodal content, each element contains:
+                - type: Content type ("image", "table", "equation", etc.)
+                - Other fields depend on type (e.g., img_path, table_data, latex, etc.)
+            metadata: Optional metadata dictionary
+            mode: Query mode ("local", "naive", "no-rag")
+            system_prompt: Optional system prompt
+            **kwargs: Other query parameters
+
+        Returns:
+            str: Query result
+        """
+        if not self.llm_model_func:
+            raise ValueError(
+                "llm_model_func is required for agentic reasoning. Please provide it when initializing LightRAG."
+            )
+
+        multimodal_content = multimodal_content or []
+        metadata = metadata or {}
+
+        logger.info(f"Executing agentic query: {query[:100]}...")
+        logger.info(f"Query mode: {mode}")
+
+        # Build planning prompt
+        multimodal_summary = self._summarize_multimodal_content_for_planner(
+            multimodal_content
+        )
+        plan_prompt = PROMPTS["AGENTIC_PLAN_PROMPT"].format(
+            query=query,
+            metadata=json.dumps(metadata, ensure_ascii=True),
+            multimodal_summary=multimodal_summary,
+        )
+
+        # Generate plans (prefer VLM if images are available)
+        plan_response = await self._call_agentic_planner(
+            plan_prompt, multimodal_content
+        )
+        plan_data = self._parse_agentic_plan_response(plan_response)
+
+        retrieval_plan = plan_data.get("retrieval_plan", {})
+        retrieval_query = (
+            plan_data.get("retrieval_query")
+            or retrieval_plan.get("retrieval_query")
+            or ""
+        )
+        missing_info = retrieval_plan.get("missing_info", [])
+        generation_plan = plan_data.get("generation_plan", [])
+
+        if not retrieval_query:
+            retrieval_query = query
+        
+        # Retrieve context from LightRAG
+        # Use naive mode for context retrieval as it properly handles only_need_context
+        query_param = QueryParam(mode="naive", only_need_context=True, **kwargs)
+        retrieved_context = await naive_query(
+            retrieval_query,
+            self.chunks_vdb,
+            self.text_chunks,
+            query_param,
+            asdict(self),
+        )
+
+        if not isinstance(retrieved_context, str):
+            retrieved_context = json.dumps(retrieved_context, ensure_ascii=True)
+
+        # Build final answer prompt
+        final_prompt = PROMPTS["AGENTIC_FINAL_ANSWER"].format(
+            query=query,
+            metadata=json.dumps(metadata, ensure_ascii=True),
+            retrieved_context=retrieved_context,
+            generation_plan=json.dumps(generation_plan, ensure_ascii=True),
+        )
+
+        # Include missing info in the final prompt if available
+        if missing_info:
+            final_prompt += (
+                "\nMissing information considered for retrieval:\n"
+                + json.dumps(missing_info, ensure_ascii=True)
+                + "\n"
+            )
+
+        # Generate final answer using VLM if images are available
+        if self._has_valid_images(multimodal_content) and self.vision_model_func:
+            messages = self._build_vlm_messages_for_agentic(
+                final_prompt,
+                multimodal_content,
+                system_prompt or PROMPTS["AGENTIC_FINAL_SYSTEM"],
+            )
+            result = await self.vision_model_func("", messages=messages)
+        else:
+            result = await self.llm_model_func(
+                final_prompt, system_prompt=system_prompt or PROMPTS["AGENTIC_FINAL_SYSTEM"]
+            )
+
+        logger.info("Agentic query completed")
+        return result
+
+    def _summarize_multimodal_content_for_planner(
+        self, multimodal_content: List[Dict[str, Any]]
+    ) -> str:
+        """
+        Explain the multimodal content for the planner
+        """
+        if not multimodal_content:
+            return "None"
+
+        summaries = []
+        for item in multimodal_content:
+            content_type = item.get("type", "unknown")
+            if content_type == "image":
+                image_path = item.get("img_path") or item.get("image_path")
+                captions = item.get("image_caption") or item.get("img_caption") or []
+                footnotes = item.get("image_footnote") or item.get("img_footnote") or []
+                summaries.append(
+                    f"- image: path={image_path}, captions={captions}, footnotes={footnotes}"
+                )
+            elif content_type == "table":
+                table_caption = item.get("table_caption", "")
+                table_data = item.get("table_data", "")
+                summaries.append(
+                    f"- table: caption={table_caption}, data={str(table_data)[:200]}"
+                )
+            elif content_type == "equation":
+                latex = item.get("latex", "")
+                summaries.append(f"- equation: latex={latex}")
+            else:
+                summaries.append(f"- {content_type}: {str(item)[:200]}")
+
+        return "\n".join(summaries)
+
+    async def _call_agentic_planner(
+        self, plan_prompt: str, multimodal_content: List[Dict[str, Any]]
+    ) -> str:
+        if self._has_valid_images(multimodal_content) and self.vision_model_func:
+            messages = self._build_vlm_messages_for_agentic(
+                plan_prompt, multimodal_content, PROMPTS["AGENTIC_PLAN_SYSTEM"]
+            )
+            return await self.vision_model_func("", messages=messages)
+
+        return await self.llm_model_func(
+            plan_prompt, system_prompt=PROMPTS["AGENTIC_PLAN_SYSTEM"]
+        )
+
+    def _has_valid_images(self, multimodal_content: List[Dict[str, Any]]) -> bool:
+        for item in multimodal_content or []:
+            if item.get("type") == "image":
+                image_path = item.get("img_path") or item.get("image_path")
+                if image_path and validate_image_file(image_path):
+                    return True
+        return False
+
+    def _build_vlm_messages_for_agentic(
+        self,
+        prompt: str,
+        multimodal_content: List[Dict[str, Any]],
+        system_prompt: str,
+    ) -> List[Dict]:
+        content_parts: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        image_index = 1
+
+        for item in multimodal_content:
+            if item.get("type") != "image":
+                continue
+
+            image_path = item.get("img_path") or item.get("image_path")
+            if not image_path or not validate_image_file(image_path):
+                continue
+
+            image_base64 = encode_image_to_base64(image_path)
+            if not image_base64:
+                continue
+
+            content_parts.append(
+                {"type": "text", "text": f"\n[Image {image_index}]\n"}
+            )
+            content_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                }
+            )
+            image_index += 1
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_parts},
+        ]
+
+    def _parse_agentic_plan_response(self, response: Any) -> Dict[str, Any]:
+        if response is None:
+            return {}
+
+        response_text = response if isinstance(response, str) else str(response)
+        cleaned = response_text.strip()
+
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z0-9]*\n", "", cleaned).strip()
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].strip()
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start : end + 1]
+
+        try:
+            return json.loads(cleaned)
+        except Exception as e:
+            logger.debug(f"Failed to parse agentic plan JSON: {e}")
+            return {}
+
+    def query_with_agentic_reasoning(
+        self,
+        query: str,
+        multimodal_content: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        mode: str = "local",
+        system_prompt: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        """
+        Synchronous version of agentic multimodal query with planning.
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.aquery_with_agentic_reasoning(
+                query,
+                multimodal_content=multimodal_content,
+                metadata=metadata,
+                mode=mode,
+                system_prompt=system_prompt,
+                **kwargs,
+            )
+        )
 
     def delete_by_entity(self, entity_name: str) -> None:
         loop = always_get_an_event_loop()

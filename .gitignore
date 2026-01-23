@@ -1,0 +1,157 @@
+# Ignore all files in the data directory
+built_graph/
+data/
+*.txt
+artrag/__pycache__/
+lib/*
+.aws/
+arxiv/
+human_eval_images/
+examples/*
+*.sh
+*.md
+
+# Python-related files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / Packaging
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+*.whl
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDE / Editor Files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Logs
+*.log
+*.log.*
+log/
+logs/
+
+# Caches
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.history/
+temp/
+tmp/
+
+# ArtRAG-specific: Generated knowledge graphs
+# built_graph/
+# Keep the directory structure but ignore contents
+# !built_graph/.gitkeep
+
+# ArtRAG-specific: Output directories
+arxiv/arxiv_output/
+slurm/slurm_output_*/
+slurm/*.out
+slurm/*.err
+.sh
+.envs
+.pyc
+
+# ArtRAG-specific: Model files (if large)
+models/llm/
+models/*.bin
+models/*.safetensors
+models/*.pt
+models/*.pth
+
+# ArtRAG-specific: Evaluation outputs
+scripts/output_*/
+scripts/*_output/
+scripts/generated_descriptions_*.json
+scripts/mean_scores_*.json
+scripts/args_*.json
+
+# Data files (uncomment if you don't want to track large data files)
+# parsed_entities.csv
+# graph_clearning/*.csv
+# human_eval_images/
+# painting_examples/*.png
+
+# Large data files
+*.csv
+*.tsv
+*.parquet
+*.h5
+*.hdf5
+
+# Image files (uncomment if you don't want to track images)
+# *.png
+# *.jpg
+# *.jpeg
+# *.gif
+# *.bmp
+# *.tiff
+
+# SLURM job files
+*.sbatch
+slurm-*.out
+slurm-*.err
+
+# Test outputs
+test_*.pyc
+.pytest_cache/
+
+# Coverage reports
+.coverage
+htmlcov/
+.tox/
+
+# Project-specific temporary files
+*.tmp
+*.bak
+*.backup
+*.orig
+
+# Documentation builds
+docs/_build/
+site/
+
+# AI/ML specific
+wandb/
+mlruns/
+.checkpoints/
+
+# OS files
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Miscellaneous
+*.ignore
+TODO.md
+*.md.bak

@@ -806,3 +806,58 @@ Example Output:
 {entities}
 # ###########
 """
+
+# Agentic reasoning prompts
+PROMPTS["AGENTIC_PLAN_SYSTEM"] = (
+    "You are an art interpretation planning assistant. Produce concise, structured plans."
+)
+
+PROMPTS[
+    "AGENTIC_PLAN_PROMPT"
+] = """Given the multimodal query, return a JSON object with two keys:
+
+1) "retrieval_plan": {{
+   "missing_info": ["..."],
+   "retrieval_query": "one concise sentence",
+   "modality_hints": ["kg", "vector", "image", "metadata"]
+}}
+2) "generation_plan": [
+   {{"step": 1, "goal": "...", "evidence": "visual|metadata|kg|text"}},
+   ...
+]
+
+Return JSON only, no extra text.
+
+User query:
+{query}
+
+Metadata (if any):
+{metadata}
+
+Multimodal summary:
+{multimodal_summary}
+"""
+
+PROMPTS["AGENTIC_FINAL_SYSTEM"] = (
+    "You are a multimodal art expert. Follow the generation plan and ground your answer in the provided evidence."
+)
+
+PROMPTS[
+    "AGENTIC_FINAL_ANSWER"
+] = """Answer the user query using the retrieved context and the generation plan.
+Follow the plan steps in order and keep the answer grounded in evidence.
+
+User query:
+{query}
+
+Metadata (if any):
+{metadata}
+
+Retrieved context:
+{retrieved_context}
+
+Generation plan:
+{generation_plan}
+
+Final answer:
+"""
