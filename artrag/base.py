@@ -18,11 +18,15 @@ class QueryParam:
     mode: Literal["local", "global", "hybrid", "naive"] = "global"
     only_need_context: bool = False
     # response_type: str = "Keep your generated description strictly under 15 words."
-    response_type: str = "Inlcude context e.g. Cultural, Historical and theme in your generated description. Keep your generated description strictly under 50 words. "
+    response_type: str = "Inlcude context e.g. Cultural, Historical and theme in your generated description. Keep your generated description strictly under 30 words. "
     top_k: int = 5
     max_token_for_text_unit: int = 1000
     max_token_for_global_context: int = 1000
     max_token_for_local_context: int = 1000
+    vlm_weight: float = 0.5  # Weight for VLM scores in reranking (0-1)
+    data_type: str = "SemArtv2"  # Dataset type (SemArtv2, Artpedia)
+    shot_number: int = 1  # Number of few-shot examples (0, 1, 2, 3)
+    fewshot_type: str = "SM_fewshot"  # Type of few-shot: "SM_fewshot" or "MM_fewshot"
 
 
 @dataclass

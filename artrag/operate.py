@@ -455,32 +455,27 @@ async def local_query(
             use_model_func,
         )
 
-    # if query_param.only_need_context:
-    #     return context
-    # if context is None:
-    #     return PROMPTS["fail_response"]
-
-    # sys_prompt_temp = PROMPTS["rag_response"]
-    if query_param.data_type == "SemArtv2" or query_param.data_type == "Artpedia" or query_param.data_type == "ExpArt":
+    # Select prompt template based on data type and shot number
+    if query_param.data_type in ["SemArtv2", "Artpedia"]:
         if query_param.shot_number == 1:
             sys_prompt_temp = PROMPTS["rag_SemArtv2_1-shot_incontext_response"]
-            # system_images = ["./painting_examples/The Harvesters.png"]
         elif query_param.shot_number == 2:
             sys_prompt_temp = PROMPTS["rag_SemArtv2_2-shot_incontext_response"]
-            # system_images = ["./painting_examples/The Harvesters.png", "./painting_examples/Still Life with Flowers.png"]
         elif query_param.shot_number == 3:
             sys_prompt_temp = PROMPTS["rag_SemArtv2_3-shot_incontext_response"]
         elif query_param.shot_number == 0:
             sys_prompt_temp = PROMPTS["zero-shot_response"]
-            # system_images = ["./painting_examples/The Harvesters.png", "./painting_examples/Still Life with Flowers.png", "./painting_examples/Madonna and Child with Saints.png"]
-
-    elif query_param.data_type == "SemArtv1-content":
-        sys_prompt_temp = PROMPTS["rag_SemArtv1-content_incontext_response"]
-    elif query_param.data_type == "SemArtv1-context":
-        sys_prompt_temp = PROMPTS["rag_SemArtv1-context_incontext_response"]
+        else:
+            raise ValueError(f"Unsupported shot_number: {query_param.shot_number}")
+    else:
+        raise ValueError(f"Unsupported data_type: {query_param.data_type}. Supported: SemArtv2, Artpedia")
     sys_prompt = sys_prompt_temp.format(
         context_data=rerank_context, response_type=query_param.response_type
     )
+    
+    # TODO: Implement system_images for MM_fewshot based on shot_number
+    # For now, MM_fewshot will work without system images (LLM functions handle None gracefully)
+    system_images = None
     
     if isinstance(input_, dict):
         # remove the "Painting Concepts" from generation
@@ -493,7 +488,7 @@ async def local_query(
             query_image_path = query_image,
         )
 
-        if query_param.fewshot_type=="MM_fewshot":
+        if query_param.fewshot_type == "MM_fewshot":
             response = await use_model_func(
                 query,
                 system_prompt=sys_prompt,

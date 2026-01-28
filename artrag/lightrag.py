@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -117,8 +118,8 @@ class LightRAG:
         set_logger(log_file)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
 
-        _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
-        logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
+        # Configuration details only logged at DEBUG level (not shown with INFO level)
+        # Use DEBUG logging if you need to see full initialization parameters
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
@@ -310,6 +311,8 @@ class LightRAG:
         metadata: Optional[Dict[str, Any]] = None,
         mode: str = "local",
         system_prompt: Optional[str] = None,
+        planner_mode: str = "full",
+        task_type: str = "description",  # "description" or "vqa"
         **kwargs,
     ) -> str:
         """
@@ -317,7 +320,7 @@ class LightRAG:
 
         Flow:
         1) Generate retrieval + generation plans from multimodal query.
-        2) Retrieve context using LightRAG (only_need_context=True).
+        2) Retrieve context using LightRAG local_query (graph-based retrieval with reranking).
         3) Build final prompt with generation plan and call LLM/VLM.
 
         Args:
@@ -326,9 +329,12 @@ class LightRAG:
                 - type: Content type ("image", "table", "equation", etc.)
                 - Other fields depend on type (e.g., img_path, table_data, latex, etc.)
             metadata: Optional metadata dictionary
-            mode: Query mode ("local", "naive", "no-rag")
+            mode: Query mode ("local", "naive", "no-rag") - note: always uses "local" for context retrieval
             system_prompt: Optional system prompt
-            **kwargs: Other query parameters
+            planner_mode: Planning mode - "full" (default, uses VLM if available), "none" (no planning),
+                         "random" (random planning), "text_only" (LLM-only planning, no VLM)
+            task_type: Task type - "description" (default, for art description generation) or "vqa" (for question answering)
+            **kwargs: Other query parameters (e.g., top_k, vlm_weight for reranking)
 
         Returns:
             str: Query result
@@ -341,25 +347,65 @@ class LightRAG:
         multimodal_content = multimodal_content or []
         metadata = metadata or {}
 
-        logger.info(f"Executing agentic query: {query[:100]}...")
-        logger.info(f"Query mode: {mode}")
+        logger.info(f"[Planner: {planner_mode.upper()}] Executing agentic query: {query[:100]}...")
+        # Query mode and planner mode are already shown in the INFO log above
 
-        # Build planning prompt
-        multimodal_summary = self._summarize_multimodal_content_for_planner(
-            multimodal_content
-        )
-        plan_prompt = PROMPTS["AGENTIC_PLAN_PROMPT"].format(
-            query=query,
-            metadata=json.dumps(metadata, ensure_ascii=True),
-            multimodal_summary=multimodal_summary,
-        )
-
+        # Generate plans based on planner_mode
+        if planner_mode == "none":
+            # No planner: use defaults
+            plan_data = self._generate_default_plan()
+            retrieval_query = query  # Use original query
+            missing_info = []
+            generation_plan = plan_data.get("generation_plan", [])
+        elif planner_mode == "random":
+            # Random planner
+            plan_data = self._generate_random_plan(query, metadata)
+            retrieval_plan = plan_data.get("retrieval_plan", {})
+            retrieval_query = retrieval_plan.get("retrieval_query", query)
+            missing_info = retrieval_plan.get("missing_info", [])
+            generation_plan = plan_data.get("generation_plan", [])
+        elif planner_mode == "text_only":
+            # Text-only planner: force LLM, no VLM
+            multimodal_summary = self._summarize_multimodal_content_for_planner(
+                multimodal_content
+            )
+            # Use VQA prompt for question-answering tasks
+            plan_prompt_key = "AGENTIC_PLAN_PROMPT_VQA" if task_type == "vqa" else "AGENTIC_PLAN_PROMPT"
+            plan_prompt = PROMPTS[plan_prompt_key].format(
+                query=query,
+                metadata=json.dumps(metadata, ensure_ascii=True),
+                multimodal_summary=multimodal_summary,
+            )
+            # Force text-only: don't use VLM even if images available
+            plan_response = await self.llm_model_func(
+                plan_prompt, system_prompt=PROMPTS["AGENTIC_PLAN_SYSTEM"]
+            )
+            plan_data = self._parse_agentic_plan_response(plan_response)
+            retrieval_plan = plan_data.get("retrieval_plan", {})
+            retrieval_query = (
+                plan_data.get("retrieval_query")
+                or retrieval_plan.get("retrieval_query")
+                or query
+            )
+            missing_info = retrieval_plan.get("missing_info", [])
+            generation_plan = plan_data.get("generation_plan", [])
+        else:  # planner_mode == "full" (default)
+            # Full planner: current implementation
+            multimodal_summary = self._summarize_multimodal_content_for_planner(
+                multimodal_content
+            )
+            # Use VQA prompt for question-answering tasks
+            plan_prompt_key = "AGENTIC_PLAN_PROMPT_VQA" if task_type == "vqa" else "AGENTIC_PLAN_PROMPT"
+            plan_prompt = PROMPTS[plan_prompt_key].format(
+                query=query,
+                metadata=json.dumps(metadata, ensure_ascii=True),
+                multimodal_summary=multimodal_summary,
+            )
         # Generate plans (prefer VLM if images are available)
         plan_response = await self._call_agentic_planner(
             plan_prompt, multimodal_content
         )
         plan_data = self._parse_agentic_plan_response(plan_response)
-
         retrieval_plan = plan_data.get("retrieval_plan", {})
         retrieval_query = (
             plan_data.get("retrieval_query")
@@ -369,25 +415,49 @@ class LightRAG:
         missing_info = retrieval_plan.get("missing_info", [])
         generation_plan = plan_data.get("generation_plan", [])
 
+        # Ensure we have a retrieval query
         if not retrieval_query:
             retrieval_query = query
         
-        # Retrieve context from LightRAG
-        # Use naive mode for context retrieval as it properly handles only_need_context
-        query_param = QueryParam(mode="naive", only_need_context=True, **kwargs)
-        retrieved_context = await naive_query(
-            retrieval_query,
-            self.chunks_vdb,
+        # Retrieve context from LightRAG using local_query for graph-based retrieval and reranking
+        # Extract image path from multimodal_content if available for VLM reranking
+        query_image = None
+        if self._has_valid_images(multimodal_content):
+            for item in multimodal_content:
+                if item.get("type") == "image":
+                    query_image = item.get("img_path") or item.get("image_path")
+                    if query_image and validate_image_file(query_image):
+                        break
+        
+        # Build input for local_query (can be string or dict with image)
+        if query_image:
+            local_query_input = {"text": retrieval_query, "image": query_image}
+        else:
+            local_query_input = retrieval_query
+        
+        query_param = QueryParam(mode="local", only_need_context=True, **kwargs)
+        response, beforererank_context, rerank_context = await local_query(
+            local_query_input,
+            self.chunk_entity_relation_graph,
+            self.entities_vdb,
             self.text_chunks,
             query_param,
             asdict(self),
         )
 
+        # Use reranked context (better quality) for agentic reasoning
+        retrieved_context = rerank_context if rerank_context else beforererank_context
+        
+        if not retrieved_context:
+            logger.warning("No context retrieved from local_query, using empty context")
+            retrieved_context = ""
+
         if not isinstance(retrieved_context, str):
             retrieved_context = json.dumps(retrieved_context, ensure_ascii=True)
 
-        # Build final answer prompt
-        final_prompt = PROMPTS["AGENTIC_FINAL_ANSWER"].format(
+        # Build final answer prompt - use VQA prompt for question-answering tasks
+        prompt_key = "AGENTIC_FINAL_ANSWER_VQA" if task_type == "vqa" else "AGENTIC_FINAL_ANSWER"
+        final_prompt = PROMPTS[prompt_key].format(
             query=query,
             metadata=json.dumps(metadata, ensure_ascii=True),
             retrieved_context=retrieved_context,
@@ -403,16 +473,20 @@ class LightRAG:
             )
 
         # Generate final answer using VLM if images are available
+        # Use VQA-specific system prompt for question-answering tasks
+        system_prompt_key = "AGENTIC_FINAL_SYSTEM_VQA" if task_type == "vqa" else "AGENTIC_FINAL_SYSTEM"
+        final_system_prompt = system_prompt or PROMPTS[system_prompt_key]
+        
         if self._has_valid_images(multimodal_content) and self.vision_model_func:
             messages = self._build_vlm_messages_for_agentic(
                 final_prompt,
                 multimodal_content,
-                system_prompt or PROMPTS["AGENTIC_FINAL_SYSTEM"],
+                final_system_prompt,
             )
             result = await self.vision_model_func("", messages=messages)
         else:
             result = await self.llm_model_func(
-                final_prompt, system_prompt=system_prompt or PROMPTS["AGENTIC_FINAL_SYSTEM"]
+                final_prompt, system_prompt=final_system_prompt
             )
 
         logger.info("Agentic query completed")
@@ -532,6 +606,75 @@ class LightRAG:
             logger.debug(f"Failed to parse agentic plan JSON: {e}")
             return {}
 
+    def _generate_default_plan(self) -> Dict[str, Any]:
+        """
+        Generate default plan for no-planner variant.
+        Returns a standard plan with all three sections (Content, Form, Context).
+        """
+        return {
+            "retrieval_plan": {
+                "retrieval_query": "",
+                "missing_info": [],
+                "modality_hints": []
+            },
+            "generation_plan": [
+                {"step": 1, "goal": "Generate Content section", "output_format": "Content"},
+                {"step": 2, "goal": "Generate Form section", "output_format": "Form"},
+                {"step": 3, "goal": "Generate Context section", "output_format": "Context"}
+            ]
+        }
+
+    def _generate_random_plan(self, query: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generate random plan for random-planner variant.
+        Uses random retrieval queries and random generation plans.
+        """
+        # Random retrieval query strategies
+        generic_queries = [
+            "art movement and style",
+            "artist biography and influence",
+            "historical and cultural context",
+            "visual elements and composition",
+            "painting technique and materials",
+            "artistic period and school",
+            "themes and symbolism"
+        ]
+        random_query = random.choice(generic_queries)
+        
+        # Try to incorporate metadata if available
+        if metadata:
+            title = metadata.get("title", "")
+            author = metadata.get("author", "")
+            if title:
+                random_query = f"{random_query} related to {title}"
+            elif author:
+                random_query = f"{random_query} by {author}"
+        
+        # Random generation plan: select 1-3 sections in random order
+        sections = ["Content", "Form", "Context"]
+        num_sections = random.randint(1, 3)
+        selected_sections = random.sample(sections, num_sections)
+        random.shuffle(selected_sections)
+        
+        generation_plan = [
+            {"step": i+1, "goal": f"Generate {section} section", "output_format": section}
+            for i, section in enumerate(selected_sections)
+        ]
+        
+        # Random modality hints
+        all_modalities = ["kg", "vector", "image", "metadata"]
+        num_hints = random.randint(1, len(all_modalities))
+        modality_hints = random.sample(all_modalities, num_hints)
+        
+        return {
+            "retrieval_plan": {
+                "retrieval_query": random_query,
+                "missing_info": [],
+                "modality_hints": modality_hints
+            },
+            "generation_plan": generation_plan
+        }
+
     def query_with_agentic_reasoning(
         self,
         query: str,
@@ -539,6 +682,7 @@ class LightRAG:
         metadata: Optional[Dict[str, Any]] = None,
         mode: str = "local",
         system_prompt: Optional[str] = None,
+        planner_mode: str = "full",
         **kwargs,
     ) -> str:
         """
@@ -552,6 +696,7 @@ class LightRAG:
                 metadata=metadata,
                 mode=mode,
                 system_prompt=system_prompt,
+                planner_mode=planner_mode,
                 **kwargs,
             )
         )

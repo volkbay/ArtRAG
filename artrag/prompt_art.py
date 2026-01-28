@@ -818,13 +818,17 @@ PROMPTS[
 
 1) "retrieval_plan": {{
    "missing_info": ["..."],
-   "retrieval_query": "one concise sentence",
+   "retrieval_query": "one concise sentence focusing on painting title, artist, art movement, or visual elements",
    "modality_hints": ["kg", "vector", "image", "metadata"]
 }}
 2) "generation_plan": [
-   {{"step": 1, "goal": "...", "evidence": "visual|metadata|kg|text"}},
-   ...
+   {{"step": 1, "goal": "Generate Content section: describe visual elements concisely (2-3 sentences)", "evidence": "visual|metadata", "output_format": "Content"}},
+   {{"step": 2, "goal": "Generate Form section: describe style and technique concisely (2-3 sentences)", "evidence": "kg|text", "output_format": "Form"}},
+   {{"step": 3, "goal": "Generate Context section: describe historical/cultural context concisely (2-3 sentences)", "evidence": "kg|text", "output_format": "Context"}}
 ]
+
+IMPORTANT: Generate concise factual descriptions (2-3 sentences per section), not verbose analytical essays.
+Total output should be 100-200 words. Focus on facts from retrieved context.
 
 Return JSON only, no extra text.
 
@@ -838,14 +842,159 @@ Multimodal summary:
 {multimodal_summary}
 """
 
+PROMPTS[
+    "AGENTIC_PLAN_PROMPT_VQA"
+] = """Given the multimodal question, return a JSON object with two keys:
+
+1) "retrieval_plan": {{
+   "missing_info": ["list of information needed to answer the question"],
+   "retrieval_query": "one concise sentence focusing on key concepts, visual elements, artist, art movement, or historical context needed to answer the question",
+   "modality_hints": ["kg", "vector", "image", "metadata"]
+}}
+2) "generation_plan": [
+   {{"step": 1, "goal": "First reasoning step: [describe what to analyze first]", "evidence": "visual|metadata|kg|text", "output_format": "reasoning_step"}},
+   {{"step": 2, "goal": "Second reasoning step: [describe next analysis]", "evidence": "visual|metadata|kg|text", "output_format": "reasoning_step"}},
+   {{"step": 3, "goal": "Final reasoning step: [describe synthesis or conclusion]", "evidence": "visual|metadata|kg|text", "output_format": "reasoning_step"}}
+]
+
+EVIDENCE TYPE GUIDELINES (match to grounding tags [Visual], [Metadata], [Description], [KG-Background]):
+- **visual**: Use when analyzing what's visible in the image (composition, objects, colors, gestures, symbols, visual elements)
+  * Maps to grounding tag: [Visual]
+  * Use for: "visual choices", "what visual elements", "composition", "what is shown", "visual evidence"
+- **metadata**: Use when question involves artist, title, technique, timeframe, tags, or painting attributes
+  * Maps to grounding tag: [Metadata]
+  * Use for: "artist", "technique", "timeframe", "when was it created", "who painted it"
+- **text**: Use when question references description text, written sources, or textual descriptions
+  * Maps to grounding tag: [Description]
+  * Use for: "description states", "text mentions", "according to the description", "the description explains"
+- **kg**: Use when question requires art historical context, movements, relationships, background knowledge, or cultural significance
+  * Maps to grounding tag: [KG-Background]
+  * Use for: "historical context", "art movement", "influence", "cultural significance", "artistic tradition"
+
+IMPORTANT PLANNING RULES:
+- Break down the question into logical reasoning steps (2-5 steps, typically 3-4 steps matching ground truth CoT structure)
+- **CRITICAL**: Match evidence types to what the question explicitly asks for:
+  * If question asks "what visual elements" or "visual choices" → use "visual" (maps to [Visual])
+  * If question asks about "artist", "technique", "timeframe" → use "metadata" (maps to [Metadata])
+  * If question references "description states" or "text mentions" → use "text" (maps to [Description])
+  * If question asks about "historical context", "art movement", "influence" → use "kg" (maps to [KG-Background])
+- **Evidence type matching**: Each step should use the evidence type that corresponds to the grounding tag needed for that reasoning step
+- Steps should build sequentially: typically start with visual/metadata observations, then connect to description/context/knowledge
+- Keep goals concise (one clear action per step, 10-15 words max)
+- Focus on multi-step reasoning that connects visual observations to historical/artistic context
+- Avoid combining too many evidence types in one step (prefer single or dual types: "visual", "visual|metadata", "kg|text")
+
+Return JSON only, no extra text.
+
+User question:
+{query}
+
+Metadata (if any):
+{metadata}
+
+Multimodal summary:
+{multimodal_summary}
+"""
+
 PROMPTS["AGENTIC_FINAL_SYSTEM"] = (
     "You are a multimodal art expert. Follow the generation plan and ground your answer in the provided evidence."
 )
 
+PROMPTS["AGENTIC_FINAL_SYSTEM_VQA"] = (
+    "You are a multimodal art expert answering questions about artworks. Provide concise, factual answers (100-200 words) "
+    "as a single flowing paragraph. Follow the generation plan and ground your answer in the provided evidence. "
+    "No markdown formatting, headers, or structured sections."
+)
+
 PROMPTS[
     "AGENTIC_FINAL_ANSWER"
-] = """Answer the user query using the retrieved context and the generation plan.
+] = """---Role---
+Answer the user query using the retrieved context and the generation plan.
 Follow the plan steps in order and keep the answer grounded in evidence.
+
+The definitions of these elements are:
+- **Content**: A description of the main subjects/concepts, objects, or actions depicted in the painting.
+- **Context**: Background information about the historical, cultural, or biographical influences relevant to the painting.
+- **Form**: An analysis of the artistic style and techniques used, including brushwork, color, composition, and use of light.
+
+---CRITICAL GUIDELINES FOR METRIC OPTIMIZATION---
+1. **Use exact terminology from retrieved context**: When the retrieved context mentions specific artist names, art movements, techniques, or historical periods, use those EXACT terms (e.g., "Pieter Bruegel the Elder", "Flemish Golden Age", "Dutch Golden Age", "Renaissance", "Post-Impressionism"). Do not paraphrase or use synonyms for these proper nouns.
+
+2. **Mention specific entities and relationships**: Explicitly reference artist names, art movements, historical periods, and techniques mentioned in the retrieved context. This improves semantic proposition matching.
+
+3. **Match ground truth style**: Use direct, factual statements similar to art catalog descriptions. Avoid flowery language, academic analysis, or verbose explanations.
+
+4. **Prioritize key facts**: Focus on concrete details from the retrieved context rather than general observations. Include specific visual elements, techniques, or historical connections.
+
+5. **Concise and factual**: Each section should be 1-2 sentences with concrete information. Total length: 20 words maximum.
+
+---IMPORTANT FORMAT REQUIREMENTS---
+- Structure your answer as **Content**, **Form**, and **Context** sections
+- Each section should be 1-2 concise sentences (factual, not analytical)
+- Total length: 25 words maximum
+- Use descriptive, factual language similar to art catalog descriptions
+- Include specific artist names, movements, and techniques when mentioned in retrieved context
+
+######################
+### Example 1:
+######################
+
+Retrieved Context:
+- Entities: Pieter Bruegel the Elder (Artist), Flemish Golden Age (Historical Period), Harvest Scene (Painting)
+- Relationships: Harvest Scene influenced by Bruegel's rural themes; belongs to Flemish Golden Age
+
+Metadata:
+Title: The Harvesters, Author: Unknown, Technique: Oil on wood, Timeframe: 1501-1600
+
+Generation Plan:
+[{{"step": 1, "goal": "Generate Content section", "output_format": "Content"}},
+ {{"step": 2, "goal": "Generate Form section", "output_format": "Form"}}]
+
+Generated description:
+**Content**: The painting portrays a bustling harvest scene with farmers gathering wheat in expansive golden fields under a bright blue sky.
+**Form**: The artist uses warm tones and detailed brushstrokes to create a realistic composition with natural lighting.
+
+######################
+### Example 2:
+######################
+
+Retrieved Context:
+- Entities: Rachel Ruysch (Artist), Dutch Golden Age (Historical Period), Still Life with Flowers (Painting), Symbolism (Art Technique)
+- Relationships: Still Life created by Ruysch; belongs to Dutch Golden Age; incorporates symbolic elements
+
+Metadata:
+Title: Still Life with Flowers, Author: Rachel Ruysch, Technique: Oil on panel, Timeframe: 1701-1750
+
+Generation Plan:
+[{{"step": 1, "goal": "Generate Content section", "output_format": "Content"}},
+ {{"step": 2, "goal": "Generate Context section", "output_format": "Context"}}]
+
+Generated description:
+**Content**: The painting depicts an ornate arrangement of flowers in a glass vase, featuring roses, tulips, and carnations with some wilting petals.
+**Context**: Created during the Dutch Golden Age, this still-life reflects the era's fascination with botanical accuracy and symbolic representation of life's transience.
+
+######################
+### Example 3 (Real SemArtv2 style):
+######################
+
+Retrieved Context:
+- Entities: Master of Flémalle (Artist), Flemish Primitives (Art Movement), Annunciation (Painting), Robert Campin (Artist)
+- Relationships: Annunciation attributed to Master of Flémalle; Master of Flémalle identified with Robert Campin; belongs to Flemish Primitives
+
+Metadata:
+Title: Annunciation, Author: Master of Flémalle, Technique: Tempera on oak, Timeframe: 1401-1450
+
+Generation Plan:
+[{{"step": 1, "goal": "Generate Content section", "output_format": "Content"}},
+ {{"step": 2, "goal": "Generate Context section", "output_format": "Context"}}]
+
+Generated description:
+**Content**: The Virgin is seated in front of a low bench on the tiled floor, a sign of her humility. On Mary's lap is an open book, a second one lies on the table.
+**Context**: This motif is possibly taken from devotional tracts of around 1400, which state that the Virgin was meditating on the Holy Scriptures when Gabriel entered.
+
+######################
+---Your Task---
+######################
 
 User query:
 {query}
@@ -858,6 +1007,78 @@ Retrieved context:
 
 Generation plan:
 {generation_plan}
+
+IMPORTANT: 
+- Extract and use EXACT artist names, art movements, techniques, and historical periods from the retrieved context
+- Write factual, direct statements similar to the examples above
+- Focus on concrete details rather than general observations
+- Match the concise, factual style of SemArtv2 ground truth descriptions
+
+Final answer:
+"""
+
+PROMPTS[
+    "AGENTIC_FINAL_ANSWER_VQA"
+] = """---Role---
+Answer the user's question precisely and concisely about the artwork using the retrieved context and the generation plan.
+Follow the plan steps in order and keep your answer grounded in evidence.
+
+---CRITICAL GUIDELINES---
+1. **Follow the generation plan**: Execute each step in the plan sequentially, using the specified evidence types.
+
+2. **Ground in evidence**: Every claim must be supported by:
+   - Visual evidence from the image
+   - Information from the retrieved knowledge graph context
+   - Metadata about the painting
+   - Description text (if available)
+
+3. **Multi-step reasoning**: Build your answer through logical reasoning steps, connecting visual observations 
+   to historical context, artistic techniques, and symbolic meanings.
+
+4. **Use exact terminology**: When the retrieved context mentions specific artist names, art movements, 
+   techniques, or historical periods, use those EXACT terms (e.g., "Pieter Bruegel the Elder", 
+   "Flemish Golden Age", "Renaissance"). Do not paraphrase proper nouns.
+
+5. **Address the question directly**: Make sure your answer fully addresses what the question is asking. 
+   If the question asks about relationships, symbolism, or comparisons, explicitly discuss those aspects.
+
+6. **BE CONCISE AND PRECISE**: 
+   - Keep your answer focused and to the point (aim for 100-200 words total, matching ground truth answer length)
+   - Avoid verbose explanations, academic analysis, or unnecessary elaboration
+   - Each reasoning step should be 1-2 sentences maximum
+   - Skip ALL markdown formatting, headers, section breaks, bullet points, numbered lists, or structured sections
+   - Write in a direct, factual style similar to art historical descriptions
+   - Write as a SINGLE flowing paragraph that directly answers the question
+   - Do NOT include phrases like "I will work through", "Let me analyze", "Step 1/2/3", or any meta-commentary
+   - Start directly with the answer content
+   - Be factual and direct, similar to museum catalog descriptions
+
+---EXAMPLE OF GOOD CONCISE ANSWER---
+Question: "How does this painting reconcile the saint's spiritual identity with his representation as a historical figure of worldly power?"
+
+Good Answer (concise, ~150 words):
+The painting portrays St. Ladislaus without a halo, marking him as a historical personage rather than a purely spiritual figure, which indicates it was intended for a secular building. However, his dual identity as both Christian king and Christian knight is established through the visual composition. He is shown wearing royal regalia—a crown and an ample, richly embroidered cloak studded with pearls—asserting his worldly authority. The presence of the national emblem on the voluted shield in the foreground reinforces his role as a ruler of temporal power. Yet the background scenes depicting two episodes from the king's life serve to identify him as embodying the ideal unity of Christian kingship and knighthood. The Renaissance palace interior setting further situates him as a historical ruler. Thus, the painting balances secular authority with spiritual ideals through compositional choices that emphasize both royal symbols and legendary narrative.
+
+---Your Task---
+User question:
+{query}
+
+Metadata (if any):
+{metadata}
+
+Retrieved context (knowledge graph subgraph):
+{retrieved_context}
+
+Generation plan (reasoning steps to follow):
+{generation_plan}
+
+Answer the question by following the generation plan step by step. For each step in the plan:
+- Use the specified evidence types (visual, metadata, kg, text)
+- Ground your reasoning in the retrieved context
+- Build logically from one step to the next
+- Connect visual observations to historical/artistic context
+
+Provide a clear, concise answer (100-200 words) that demonstrates multi-step reasoning and is fully grounded in the evidence. Write as a SINGLE flowing paragraph without any markdown formatting, headers, or structure.
 
 Final answer:
 """

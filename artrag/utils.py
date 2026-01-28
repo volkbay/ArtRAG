@@ -21,10 +21,12 @@ logger = logging.getLogger("lightrag")
 
 
 def set_logger(log_file: str):
-    logger.setLevel(logging.DEBUG)
+    # Set to INFO level to reduce verbose DEBUG logs
+    # Use DEBUG only when troubleshooting
+    logger.setLevel(logging.INFO)
 
     file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -314,10 +316,6 @@ def validate_image_file(image_path: str, max_size_mb: int = 50) -> bool:
     try:
         path = Path(image_path)
 
-        logger.debug(f"Validating image path: {image_path}")
-        logger.debug(f"Resolved path object: {path}")
-        logger.debug(f"Path exists check: {path.exists()}")
-
         # Check if file exists
         if not path.exists():
             logger.warning(f"Image file not found: {image_path}")
@@ -337,9 +335,6 @@ def validate_image_file(image_path: str, max_size_mb: int = 50) -> bool:
 
         path_lower = str(path).lower()
         has_valid_extension = any(path_lower.endswith(ext) for ext in image_extensions)
-        logger.debug(
-            f"File extension check - path: {path_lower}, valid: {has_valid_extension}"
-        )
 
         if not has_valid_extension:
             logger.warning(f"File does not appear to be an image: {image_path}")
@@ -348,15 +343,12 @@ def validate_image_file(image_path: str, max_size_mb: int = 50) -> bool:
         # Check file size
         file_size = path.stat().st_size
         max_size = max_size_mb * 1024 * 1024
-        logger.debug(
-            f"File size check - size: {file_size} bytes, max: {max_size} bytes"
-        )
 
         if file_size > max_size:
             logger.warning(f"Image file too large ({file_size} bytes): {image_path}")
             return False
 
-        logger.debug(f"Image validation successful: {image_path}")
+        # Only log successful validation at DEBUG level (not shown with INFO level)
         return True
 
     except Exception as e:

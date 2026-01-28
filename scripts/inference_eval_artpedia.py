@@ -63,10 +63,10 @@ def run_inference(WORKING_DIR, llm_model_func, data_type, retrieval_strategy, sh
     )
     # import pdb; pdb.set_trace()
     if data_type == "Artpedia":
-        directory = "../data/Artpedia/artpedia_test.json"
+        directory = "../../data/Artpedia/artpedia_test.json"
         data = pd.read_json(directory, encoding='utf8',orient = "index")[:data_num]
     elif data_type == "ExpArt":
-        directory = "../data/ExpArt/test_unseen-artist-year.json"
+        directory = "../../data/ExpArt/test_unseen-artist-year.json"
         data = pd.read_json(directory, encoding='utf8')[:data_num]
 
 
@@ -81,7 +81,7 @@ def run_inference(WORKING_DIR, llm_model_func, data_type, retrieval_strategy, sh
             tags = row['tags']
             artist = row['artists']
             img_id = row.name
-            img = f"../data/Artpedia/Images/{img_id}.jpg"
+            img = f"../../data/Artpedia/Images/{img_id}.jpg"
         elif data_type == "ExpArt":
             tags = row['entities']
             artist = row['artist']
@@ -167,12 +167,12 @@ def evaluate_descriptions_artpedia(generated_descriptions_file, data_type, model
         generated_descriptions = json.load(f)
     
     if data_type == "Artpedia":
-        ground_truth_file = "../data/Artpedia/artpedia_test.json"
+        ground_truth_file = "../../data/Artpedia/artpedia_test.json"
         df = pd.read_json(ground_truth_file, encoding='utf8',orient = "index")
-        image_dir = "../data/Artpedia/Images"
+        image_dir = "../../data/Artpedia/Images"
     elif data_type == "ExpArt":
-        ground_truth_file = "../data/ExpArt/test_unseen-artist-year.json"
-        image_dir = "../data/ExpArt/Images"
+        ground_truth_file = "../../data/ExpArt/test_unseen-artist-year.json"
+        image_dir = "../../data/ExpArt/Images"
         df = pd.read_json(ground_truth_file, encoding='utf8')
     
 
@@ -310,7 +310,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--image_dir',
         type=str,
-        default='../data/Artpedia/Images',
+        default='../../data/Artpedia/Images',
         help='Directory of images, with the filenames as image ids.')
 
     args = parser.parse_args()

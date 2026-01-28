@@ -4,6 +4,7 @@ import json
 import aioboto3
 import numpy as np
 from typing import List, Optional
+from pathlib import Path
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -134,6 +135,8 @@ async def bedrock_complete_if_cache(
     aws_secret_access_key=None,
     aws_session_token=None,
     aws_region=None,
+    query_image_path: Optional[str] = None,
+    system_image_paths: Optional[List[str]] = None,
     **kwargs,
 ) -> str:
     # Only set environment variables if they are provided and not None
@@ -148,22 +151,81 @@ async def bedrock_complete_if_cache(
     # Get AWS region from parameter, environment variable, or use default
     region = aws_region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
 
+    # Remove image parameters from kwargs to avoid passing them to Bedrock API
+    kwargs.pop("query_image_path", None)
+    kwargs.pop("system_image_paths", None)
+
     # Fix message history format
     messages = []
     for history_message in history_messages:
         message = copy.copy(history_message)
-        message["content"] = [{"text": message["content"]}]
-        messages.append(message)
+        # Handle both text and multimodal content
+        if isinstance(message.get("content"), list):
+            # Already in multimodal format
+            messages.append(message)
+        else:
+            # Convert text to format
+            message["content"] = [{"text": message["content"]}]
+            messages.append(message)
 
-    # Add user prompt
-    messages.append({"role": "user", "content": [{"text": prompt}]})
+    # Build user message content
+    user_content = [{"text": prompt}]
+    
+    # Add query image if provided
+    if query_image_path:
+        from .utils import encode_image_to_base64, validate_image_file
+        if validate_image_file(query_image_path):
+            image_base64 = encode_image_to_base64(query_image_path)
+            if image_base64:
+                # Detect image format from file extension
+                img_ext = Path(query_image_path).suffix.lower()
+                format_map = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", 
+                             ".gif": "gif", ".webp": "webp", ".bmp": "bmp"}
+                img_format = format_map.get(img_ext, "jpeg")  # Default to jpeg
+                
+                user_content.append({
+                    "image": {
+                        "format": img_format,
+                        "source": {
+                            "bytes": base64.b64decode(image_base64)
+                        }
+                    }
+                })
+
+    # Add user message
+    messages.append({"role": "user", "content": user_content})
+    
+    # Handle system images if provided
+    system_content = None
+    if system_prompt:
+        system_content = [{"text": system_prompt}]
+        if system_image_paths:
+            from .utils import encode_image_to_base64, validate_image_file
+            for img_path in system_image_paths:
+                if validate_image_file(img_path):
+                    image_base64 = encode_image_to_base64(img_path)
+                    if image_base64:
+                        # Detect image format from file extension
+                        img_ext = Path(img_path).suffix.lower()
+                        format_map = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", 
+                                     ".gif": "gif", ".webp": "webp", ".bmp": "bmp"}
+                        img_format = format_map.get(img_ext, "jpeg")  # Default to jpeg
+                        
+                        system_content.append({
+                            "image": {
+                                "format": img_format,
+                                "source": {
+                                    "bytes": base64.b64decode(image_base64)
+                                }
+                            }
+                        })
 
     # Initialize Converse API arguments
     args = {"modelId": model, "messages": messages}
 
-    # Define system prompt
-    if system_prompt:
-        args["system"] = [{"text": system_prompt}]
+    # Define system prompt (with images if provided)
+    if system_content:
+        args["system"] = system_content
 
     # Map and set up inference parameters
     inference_params_map = {
@@ -348,13 +410,38 @@ async def gpt_4o_mini_complete(
 async def bedrock_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
+    # Extract bedrock_model from kwargs if provided, otherwise use default
+    bedrock_model = kwargs.pop('bedrock_model', "us.anthropic.claude-haiku-4-5-20251001-v1:0")
     return await bedrock_complete_if_cache(
-        "google.gemma-3-27b-it",
+        bedrock_model,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         **kwargs,
     )
+
+
+def create_bedrock_complete(model: str):
+    """
+    Factory function to create a bedrock_complete function with a specific model.
+    
+    Args:
+        model: Bedrock model ID (e.g., "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+    
+    Returns:
+        A configured bedrock_complete function
+    """
+    async def bedrock_complete_with_model(
+        prompt, system_prompt=None, history_messages=[], **kwargs
+    ) -> str:
+        return await bedrock_complete_if_cache(
+            model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            **kwargs,
+        )
+    return bedrock_complete_with_model
 
 
 async def hf_model_complete(
