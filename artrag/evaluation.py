@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from pprint import pprint
 
-import language_evaluation
+from .huggingface_eval import evaluate_batch as hf_evaluate_batch
 import clip
 from . import clip_score
 
@@ -151,96 +151,13 @@ def evaluate_batch(batch_predicts: List[str], batch_answers: List[List[str]]) ->
         batch_answers: List of ground truth answer lists (each can contain multiple references)
 
     Returns:
-        dict: Dictionary of metric scores, or None if all evaluation fails
+        dict: Dictionary of metric scores
     """
-    # Try full CocoEvaluator first (includes all metrics including SPICE)
     try:
-        evaluator = language_evaluation.CocoEvaluator()
-        batch_result = evaluator.run_evaluation(batch_predicts, batch_answers)
-        return batch_result
+        return hf_evaluate_batch(batch_predicts, batch_answers)
     except Exception as e:
-        print(f"Warning: CocoEvaluator failed (likely SPICE issue): {e}")
-        print("Falling back to individual metrics (including SPICE)...")
-        
-        # Fallback: compute metrics individually, including SPICE
-        batch_result = {}
-        
-        try:
-            from pycocoevalcap.bleu.bleu import Bleu
-            from pycocoevalcap.meteor.meteor import Meteor
-            from pycocoevalcap.rouge.rouge import Rouge
-            from pycocoevalcap.cider.cider import Cider
-            from pycocoevalcap.spice.spice import Spice
-            from pycocoevalcap.tokenizer.ptbtokenizer import PTBTokenizer
-            
-            tokenizer = PTBTokenizer()
-            
-            # Format data for evaluation
-            refs = {idx: [{'caption': r} for r in ref_list] for idx, ref_list in enumerate(batch_answers)}
-            cands = {idx: [{'caption': c}] for idx, c in enumerate(batch_predicts)}
-            refs = tokenizer.tokenize(refs)
-            cands = tokenizer.tokenize(cands)
-            
-            # BLEU scores
-            try:
-                bleu_scorer = Bleu(4)
-                bleu_scores, _ = bleu_scorer.compute_score(refs, cands)
-                if isinstance(bleu_scores, list):
-                    batch_result['Bleu_1'] = bleu_scores[0]
-                    batch_result['Bleu_2'] = bleu_scores[1]
-                    batch_result['Bleu_3'] = bleu_scores[2]
-                    batch_result['Bleu_4'] = bleu_scores[3]
-                else:
-                    batch_result['Bleu_4'] = bleu_scores
-            except Exception as e:
-                print(f"Warning: BLEU evaluation failed: {e}")
-            
-            # METEOR
-            try:
-                meteor_scorer = Meteor()
-                meteor_score, _ = meteor_scorer.compute_score(refs, cands)
-                batch_result['METEOR'] = meteor_score
-            except Exception as e:
-                print(f"Warning: METEOR evaluation failed: {e}")
-            
-            # ROUGE_L
-            try:
-                rouge_scorer = Rouge()
-                rouge_score, _ = rouge_scorer.compute_score(refs, cands)
-                batch_result['ROUGE_L'] = rouge_score
-            except Exception as e:
-                print(f"Warning: ROUGE evaluation failed: {e}")
-            
-            # CIDEr
-            try:
-                cider_scorer = Cider()
-                cider_score, _ = cider_scorer.compute_score(refs, cands)
-                batch_result['CIDEr'] = cider_score
-            except Exception as e:
-                print(f"Warning: CIDEr evaluation failed: {e}")
-            
-            # SPICE - compute individually
-            try:
-                spice_scorer = Spice()
-                spice_score, _ = spice_scorer.compute_score(refs, cands)
-                # SPICE returns a dict with 'All' key containing the F1 score
-                if isinstance(spice_score, dict):
-                    batch_result['SPICE'] = spice_score.get('All', {}).get('f', 0.0)
-                else:
-                    batch_result['SPICE'] = spice_score
-            except Exception as e:
-                print(f"Warning: SPICE evaluation failed: {e}")
-                print("  This may be due to Java/Stanford CoreNLP issues. Check Java installation.")
-            
-            if batch_result:
-                return batch_result
-            else:
-                print("Error: All individual metrics failed")
-                return None
-                
-        except Exception as e:
-            print(f"Error evaluating batch with fallback method: {e}")
-            return None
+        print(f"Error evaluating batch with Hugging Face metrics: {e}")
+        return {}
 
 
 def load_ground_truth_semart(data_type: str) -> tuple[Dict[str, List[str]], Dict[str, Dict[str, List[str]]], str]:

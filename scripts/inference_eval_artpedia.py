@@ -9,8 +9,8 @@ from tqdm import tqdm
 from datetime import datetime
 from pprint import pprint
 import numpy as np
-import language_evaluation
 from artrag import LightRAG, QueryParam, clip_score
+from artrag.huggingface_eval import evaluate_batch as hf_evaluate_batch
 from artrag.llm import gpt_4o_mini_complete, gpt_4o_complete
 from multiprocessing import Pool, cpu_count
 import pdb
@@ -149,13 +149,8 @@ def run_inference(WORKING_DIR, llm_model_func, data_type, retrieval_strategy, sh
 
 
 def evaluate_batch(batch_predicts, batch_answers):
-    # evaluator = language_evaluation.CocoEvaluator()
-    # return evaluator.run_evaluation(batch_predicts, batch_answers)
-    # pdb.set_trace()
     try:
-        evaluator = language_evaluation.CocoEvaluator()
-        batch_result  = evaluator.run_evaluation(batch_predicts, batch_answers)
-        return batch_result
+        return hf_evaluate_batch(batch_predicts, batch_answers)
     except Exception as e:
         print(f"Error evaluating batch: {e}")
         return None

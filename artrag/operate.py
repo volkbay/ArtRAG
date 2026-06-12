@@ -28,7 +28,8 @@ from .base import (
 from .prompt_art import GRAPH_FIELD_SEP, PROMPTS
 from .prunning import (
     find_interconnected_edges,
-    dual_passage_rerank)
+    dual_passage_rerank,
+    extract_metadata)
 
 
 def chunking_by_token_size(
@@ -248,7 +249,7 @@ async def _merge_edges_then_upsert(
 
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
-    knwoledge_graph_inst: BaseGraphStorage,
+    knowledge_graph_inst: BaseGraphStorage,
     entity_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     global_config: dict,
@@ -355,13 +356,13 @@ async def extract_entities(
             maybe_edges[tuple(sorted(k))].extend(v)
     all_entities_data = await asyncio.gather(
         *[
-            _merge_nodes_then_upsert(k, v, knwoledge_graph_inst, global_config)
+            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
             for k, v in maybe_nodes.items()
         ]
     )
     all_relationships_data = await asyncio.gather(
         *[
-            _merge_edges_then_upsert(k[0], k[1], v, knwoledge_graph_inst, global_config)
+            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
             for k, v in maybe_edges.items()
         ]
     )
@@ -398,18 +399,16 @@ async def extract_entities(
         }
         await relationships_vdb.upsert(data_for_vdb)
 
-    return knwoledge_graph_inst
+    return knowledge_graph_inst
 
 
 async def local_query(
     input_: Union[str, dict],
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
     global_config: dict,
 ) -> str:
-    context = None
     use_model_func = global_config["llm_model_func"]
 
     kw_prompt_temp = PROMPTS["keywords_extraction"]
@@ -418,10 +417,11 @@ async def local_query(
         query_image = input_["image"]
     else:
         query = input_
-        
-    kw_prompt = kw_prompt_temp.format(query=query)
-    result = await use_model_func(kw_prompt)
-
+    metadata = extract_metadata(query)
+    print(f"DEBUG - Extracted metadata: {metadata}")
+    kw_prompt = kw_prompt_temp.format(query=metadata)
+    result = await use_model_func(
+        kw_prompt, query_image_path = query_image)
     try:
         keywords_data = json.loads(result)
         keywords = keywords_data.get("keywords", [])
@@ -443,6 +443,7 @@ async def local_query(
         except json.JSONDecodeError as e:
             print(f"JSON parsing error: {e}")
             return PROMPTS["fail_response"]
+    print(f"Extracted keywords: {keywords}")
     if keywords:
         rerank_context, beforererank_context = await _build_local_query_context(
             query,
@@ -450,13 +451,12 @@ async def local_query(
             keywords,
             knowledge_graph_inst,
             entities_vdb,
-            text_chunks_db,
             query_param,
             use_model_func,
         )
 
     # Select prompt template based on data type and shot number
-    if query_param.data_type in ["SemArtv2", "Artpedia"]:
+    if query_param.data_type in ["SemArtv2", "Artpedia", "raw_sample"]:
         if query_param.shot_number == 1:
             sys_prompt_temp = PROMPTS["rag_SemArtv2_1-shot_incontext_response"]
         elif query_param.shot_number == 2:
@@ -523,7 +523,6 @@ async def _build_local_query_context(
     keywords, 
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
     use_model_func,
 ):
@@ -546,8 +545,8 @@ async def _build_local_query_context(
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]
- 
-    node_datas, use_relations = await ndoes_expension(
+    print(f"DEBUG: Retrieved node data: {node_datas}")  #TODO burada kaldım
+    node_datas, use_relations = await nodes_expansion(
         node_datas, query_param, knowledge_graph_inst
     )
     logger.info(
@@ -587,7 +586,7 @@ async def _build_local_query_context(
     return after_rerank_context, before_rerank_context
 
 
-async def ndoes_expension(
+async def nodes_expansion(
     node_datas: list[dict],
     query_param: QueryParam,
     knowledge_graph_inst: BaseGraphStorage,
@@ -775,7 +774,7 @@ async def no_rag(
         response = await use_model_func(
             query,
             system_prompt=sys_prompt,
-            query_image_path = image,
+            query_image_path = image, 
         )
     else:
         query = input_

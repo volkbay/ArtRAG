@@ -1,22 +1,27 @@
-import os
+import base64
 import copy
 import json
-import aioboto3
-import numpy as np
-from typing import List, Optional
-from pathlib import Path
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-import torch
-from .base import BaseKVStorage
-from .utils import compute_args_hash, wrap_embedding_func_with_attrs
-import base64
+import os
 import pdb
 from functools import lru_cache
+from pathlib import Path
+from typing import List, Optional
+
+import aioboto3
+import numpy as np
+import torch
+import torchvision.transforms as T
+from PIL import Image
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+from torchvision.transforms.functional import InterpolationMode
+
+from .base import BaseKVStorage
+from .utils import compute_args_hash, wrap_embedding_func_with_attrs
 
 # Try to load .env file if python-dotenv is available
 try:
@@ -29,14 +34,28 @@ except ImportError:
     pass  # python-dotenv not installed, rely on environment variables
 
 from openai import (
-    AsyncOpenAI,
     APIConnectionError,
-    RateLimitError,
-    Timeout,
     APITimeoutError,
     AsyncAzureOpenAI,
+    AsyncOpenAI,
+    RateLimitError,
+    Timeout,
 )
+from PIL import Image
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def _normalize_local_model_name(model_name: str) -> str:
+    """Resolve local model paths so cache keys stay stable across aliases."""
+    try:
+        model_path = Path(model_name)
+        if model_name.startswith(".") or model_path.exists():
+            return str(model_path.expanduser().resolve())
+    except Exception:
+        pass
+    return model_name
 
 def encode_image(image_path: str) -> str:
     with open(image_path, "rb") as image_file:
@@ -272,12 +291,47 @@ async def bedrock_complete_if_cache(
 
 @lru_cache(maxsize=1)
 def initialize_hf_model(model_name):
+    # Monkeypatch to handle custom models (like InternVL3) that lack `all_tied_weights_keys`.
+    # This property is expected by recent transformers versions during initialization and finalization.
+    from transformers.modeling_utils import PreTrainedModel
+    if not hasattr(PreTrainedModel, '_patch_applied'):
+        @property
+        def all_tied_weights_keys(self):
+            """Fallback property for models missing all_tied_weights_keys."""
+            if hasattr(self, '_tied_weights_keys'):
+                return dict(self._tied_weights_keys) if self._tied_weights_keys else {}
+            return {}
+        
+        @all_tied_weights_keys.setter
+        def all_tied_weights_keys(self, value):
+            """Setter that silently accepts assignments (needed during model init)."""
+            pass
+        
+        PreTrainedModel.all_tied_weights_keys = all_tied_weights_keys
+        PreTrainedModel._patch_applied = True
+
+    # Load tokenizer without device mapping (simpler for custom models).
     hf_tokenizer = AutoTokenizer.from_pretrained(
-        model_name, device_map="auto"
+        model_name,
+        trust_remote_code=True,
+        local_files_only=True,
+        fix_mistral_regex=True,  # Suppress tokenizer regex warning for mistral-based models
     )
+
+    # For custom models like InternVL3, avoid device_map heuristics that break on missing attributes.
+    # Load with device_map=None and move to device manually.
     hf_model = AutoModelForCausalLM.from_pretrained(
-        model_name, device_map="auto"
+        model_name,
+        device_map=None,
+        trust_remote_code=True,
+        local_files_only=True,
+        low_cpu_mem_usage=False,  # Disable to avoid further device_map issues
     )
+
+    # Move model to GPU if available.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    hf_model = hf_model.to(device)
+
     if hf_tokenizer.pad_token is None:
         hf_tokenizer.pad_token = hf_tokenizer.eos_token
 
@@ -298,7 +352,7 @@ async def hf_model_if_cache(
     history_messages=[],
     **kwargs,
 ) -> str:
-    model_name = model
+    model_name = _normalize_local_model_name(model)
     hf_model, hf_tokenizer = initialize_hf_model(model_name)
     messages = []
     if system_prompt:
@@ -338,6 +392,14 @@ async def hf_model_if_cache(
                     + ori_message[msgid]["role"]
                     + ">\n"
                 )
+
+    # Special handling for vision-language models (e.g., InternVLChatModel).
+    # If the model expects img_context_token_id but it's None, return a fallback message.
+    if hasattr(hf_model, "img_context_token_id") and hf_model.img_context_token_id is None:
+        return (
+            "Note: This is a vision-language model. For best results, provide an image. "
+            "Text-only mode is limited. Please include an image in the query."
+        )
 
     input_ids = hf_tokenizer(
         input_prompt, return_tensors="pt", padding=True, truncation=True
@@ -444,10 +506,91 @@ def create_bedrock_complete(model: str):
     return bedrock_complete_with_model
 
 
-async def hf_model_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+@lru_cache(maxsize=1)
+def initialize_hf_vision_pipeline(model_name):
+    """
+    Initialize an InternVL3 model for image-to-text inference.
+    Returns a callable that processes (image, prompt) -> text.
+    """
+    device_str = "cuda" if torch.cuda.is_available() else "cpu"
+    model_name_norm = _normalize_local_model_name(model_name)
+    hf_model, hf_tokenizer = initialize_hf_model(model_name_norm)
+    hf_model.to(device_str)
+    hf_model.eval()
+    
+    def vision_inference(image, prompt: str = "Describe this image"):
+        """Process image and prompt through InternVLChatModel."""
+        try:            
+            # InternVL3 expects pixel_values from images.
+            # Use the model's internal image processing if available.
+            if hasattr(hf_model, 'image_processor'):
+                pixel_values = hf_model.image_processor(
+                    image, return_tensors="pt"
+                )["pixel_values"].to(device_str)
+                print(f'DEBUG - 1.Type of pixel_values: {pixel_values.dtype}, shape: {pixel_values.shape}')
+            else:
+                # Prep the tensor using the custom function above
+                # (Sets dynamic patching to 448x448 blocks, max 12 tiles)
+                pixel_values = preprocess_internvl_image(image, input_size=448, max_num=12)
+
+                # Move tensors to the same device/precision as your loaded hf_model
+                pixel_values = pixel_values.to(device_str, dtype=torch.bfloat16)
+            # else:
+            #     # Fallback: assume image is PIL and use basic preprocessing
+            #     from torchvision.transforms import ToTensor
+            #     pixel_values = ToTensor()(image).unsqueeze(0).to(device_str).to(torch.bfloat16)
+            #     print(f'DEBUG - 3.Type of pixel_values: {pixel_values.dtype}, shape: {pixel_values.shape}')
+            
+            # Generate response using the model's generate method.
+            with torch.no_grad():
+                generation_config = dict(max_new_tokens=1024, do_sample=True)
+                response = hf_model.chat(
+                    pixel_values=pixel_values,
+                    question=prompt,
+                    tokenizer=hf_tokenizer,
+                    generation_config=generation_config,
+                )
+            return response if isinstance(response, str) else str(response)
+        except AttributeError:
+            # Fallback if chat method is not available.
+            raise RuntimeError(
+                f"InternVLChatModel does not have expected chat interface for {model_name}"
+            )
+    
+    return vision_inference
+
+
+
+async def internvl3_14b_complete(
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    query_image_path: Optional[str] = None,
+    **kwargs,
 ) -> str:
-    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+    model_name = kwargs.get("llm_model_name")
+    hashing_kv = kwargs.get("hashing_kv")
+    if not model_name and hashing_kv is not None and hasattr(hashing_kv, "global_config"):
+        model_name = hashing_kv.global_config.get("llm_model_name")
+    if not model_name:
+        model_name = "./bin/pretrained/InternVL3-14B"
+
+    if query_image_path:
+        try:
+            image = Image.open(query_image_path).convert("RGB")
+            vision_infer = initialize_hf_vision_pipeline(model_name)
+            kwargs.pop("hashing_kv", None)
+            # vision_infer is now a callable that returns a string directly.
+            output = vision_infer(image, prompt=prompt)
+            return str(output).strip()
+        except Exception as exc:
+            print(f"Warning: InterVL3 image generation failed, falling back to text-only mode: {exc}")
+
+    if not model_name:
+        raise ValueError(
+            "internvl3_14b_complete could not resolve an HF model name or local path."
+        )
+
     return await hf_model_if_cache(
         model_name,
         prompt,
@@ -575,27 +718,120 @@ async def bedrock_embedding(
         return np.array(embed_texts)
 
 
+def mean_pool_embeddings(token_embeddings: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    attention_mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).to(token_embeddings.dtype)
+    summed = (token_embeddings * attention_mask).sum(dim=1)
+    counts = attention_mask.sum(dim=1).clamp(min=1e-9)
+    return summed / counts
+
+
 async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
-    input_ids = tokenizer(
+    device = next(embed_model.parameters()).device if hasattr(embed_model, "parameters") else torch.device("cpu")
+    encoded = tokenizer(
         texts, return_tensors="pt", padding=True, truncation=True
-    ).input_ids
+    ).to(device)
     with torch.no_grad():
-        outputs = embed_model(input_ids)
-        embeddings = outputs.last_hidden_state.mean(dim=1)
-    return embeddings.detach().numpy()
+        if hasattr(embed_model, "get_input_embeddings"):
+            token_embeddings = embed_model.get_input_embeddings()(encoded["input_ids"])
+        else:
+            outputs = embed_model(encoded["input_ids"])
+            token_embeddings = outputs.last_hidden_state
+        embeddings = mean_pool_embeddings(token_embeddings, encoded["attention_mask"])
+    return embeddings.detach().cpu().to(torch.float32).numpy()
 
 
-async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+def create_internvl3_embedding(model_name: str = "./bin/pretrained/InternVL3-14B"):
+    model_name_norm = _normalize_local_model_name(model_name)
+    @wrap_embedding_func_with_attrs(embedding_dim=5120, max_token_size=8192)
+    async def internvl3_embedding(texts: list[str]) -> np.ndarray:
+        embed_model, tokenizer = initialize_hf_model(model_name_norm)
+        return await hf_embedding(texts, tokenizer, embed_model)
+
+    return internvl3_embedding
+
+
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
+def build_transform(input_size):
+    """Standard normalization and resizing transform for InternVL"""
+    transform = T.Compose([
+        T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
+        T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+        T.ToTensor(),
+        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    ])
+    return transform
+
+
+def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
+    """Finds the best layout grid for dynamic high-res tile slicing"""
+    best_ratio_diff = float('inf')
+    best_ratio = (1, 1)
+    area = width * height
+    for ratio in target_ratios:
+        target_aspect_ratio = ratio[0] / ratio[1]
+        ratio_diff = abs(aspect_ratio - target_aspect_ratio)
+        if ratio_diff < best_ratio_diff:
+            best_ratio_diff = ratio_diff
+            best_ratio = ratio
+        elif ratio_diff == best_ratio_diff:
+            if area > 0.5 * image_size * image_size * ratio[0] * ratio[1]:
+                best_ratio = ratio
+    return best_ratio
+
+
+def preprocess_internvl_image(image, input_size=448, max_num=12):
     """
-    Deprecated in favor of `embed`.
+    Loads an image, dynamically crops it into multiple 448x448 tiles,
+    and appends a global thumbnail tile.
     """
-    embed_text = []
-    ollama_client = ollama.Client(**kwargs)
-    for text in texts:
-        data = ollama_client.embeddings(model=embed_model, prompt=text)
-        embed_text.append(data["embedding"])
+    transform = build_transform(input_size=input_size)
+    
+    orig_width, orig_height = image.size
+    aspect_ratio = orig_width / orig_height
 
-    return embed_text
+    # Generate candidate grid layouts (e.g., 1x2, 2x3 tiles) up to max_num blocks
+    target_ratios = set()
+    for i in range(1, max_num + 1):
+        for j in range(1, max_num + 1):
+            if i * j <= max_num:
+                target_ratios.add((i, j))
+    target_ratios = sorted(list(target_ratios), key=lambda x: x[0] * x[1])
+
+    # Find best grid layout for current aspect ratio
+    target_ratio = find_closest_aspect_ratio(
+        aspect_ratio, target_ratios, orig_width, orig_height, input_size
+    )
+
+    # Calculate dimensions for the cropped patches
+    target_width = input_size * target_ratio[0]
+    target_height = input_size * target_ratio[1]
+    blocks = target_ratio[0] * target_ratio[1]
+
+    # Resize image to fit the new layout grid
+    resized_img = image.resize((target_width, target_height), Image.BILINEAR)
+    processed_images = []
+    
+    # Slice into sub-tiles
+    for i in range(blocks):
+        box = (
+            (i % target_ratio[0]) * input_size,
+            (i // target_ratio[0]) * input_size,
+            ((i % target_ratio[0]) + 1) * input_size,
+            ((i // target_ratio[0]) + 1) * input_size
+        )
+        split_img = resized_img.crop(box)
+        processed_images.append(transform(split_img))
+
+    # Always append a global thumbnail (resized version of the whole image)
+    thumbnail_img = image.resize((input_size, input_size), Image.BILINEAR)
+    processed_images.append(transform(thumbnail_img))
+
+    # Stack into a single tensor of shape: (num_tiles, 3, 448, 448)
+    pixel_values = torch.stack(processed_images)
+    return pixel_values
 
 
 if __name__ == "__main__":

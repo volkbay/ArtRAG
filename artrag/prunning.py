@@ -18,7 +18,7 @@ async def summarize_description(text, use_model_func):
     if len(text.split()) < 30:  # If already short, return as is
         return text
 
-    prompt = f"Summarize the following text withon 30 words, keeping only the most relevant information:\n\n{text}"
+    prompt = f"Summarize the following text within 30 words, keeping only the most relevant information:\n\n{text}"
     
     response = await use_model_func(prompt)
 
@@ -56,7 +56,7 @@ def extract_metadata(text):
     match = re.search(r"Metadata:\s*(.*)", text)
     if match:
         return match.group(1).strip()
-    return None  # Keyword not found
+    return text  # This is already metadata without prompt
 
 
 async def rerank_nodes_with_vlm(
@@ -88,7 +88,7 @@ async def rerank_nodes_with_vlm(
     except Exception as e:
         logger.warning(f"Failed to parse VLM ranking response: {e}")
         ranked_nodes = nodes  # If ranking fails, return the original list
-
+    print(f"DEBUG: Ranking response: {response}")
     # Create a dictionary to store VLM rank scores (higher is better)
     vlm_rank_scores = {node["entity_name"]: len(nodes) - i for i, node in enumerate(ranked_nodes)}
 
@@ -128,9 +128,10 @@ async def dual_passage_rerank(
         node["description"] = await summarize_description(node.get("description", "UNKNOWN"), use_model_func)
         if "source_id" in node:
             del node["source_id"]
-
+    print(f"DEBUG: After summarization: {[node['description'] for node in nodes]}")
     # Step 1: Get VLM listwise ranking scores
     vlm_ranked_nodes, vlm_rank_scores = await rerank_nodes_with_vlm(image_path, painting_metadata, nodes, use_model_func )
+    print(f"DEBUG: VLM ranked scores: {vlm_rank_scores}")
     # Step 2: Compute node degree ranking scores
     degree_scores = {node["entity_name"]: node["rank"] for node in nodes}
 
