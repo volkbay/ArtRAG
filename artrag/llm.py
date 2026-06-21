@@ -36,13 +36,11 @@ except ImportError:
 from openai import (
     APIConnectionError,
     APITimeoutError,
-    AsyncAzureOpenAI,
     AsyncOpenAI,
     RateLimitError,
     Timeout,
 )
-from PIL import Image
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -57,8 +55,19 @@ def _normalize_local_model_name(model_name: str) -> str:
         pass
     return model_name
 
+
+def _is_local_model_name(model_name: str) -> bool:
+    try:
+        model_path = Path(model_name)
+        return model_name.startswith(".") or model_path.exists()
+    except Exception:
+        return False
+
 def encode_image(image_path: str) -> str:
-    with open(image_path, "rb") as image_file:
+    from .utils import resize_image_if_large
+
+    usable_path = resize_image_if_large(image_path)
+    with open(usable_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode("utf-8")
     
 @retry(
@@ -291,51 +300,79 @@ async def bedrock_complete_if_cache(
 
 @lru_cache(maxsize=1)
 def initialize_hf_model(model_name):
-    # Monkeypatch to handle custom models (like InternVL3) that lack `all_tied_weights_keys`.
-    # This property is expected by recent transformers versions during initialization and finalization.
-    from transformers.modeling_utils import PreTrainedModel
-    if not hasattr(PreTrainedModel, '_patch_applied'):
-        @property
-        def all_tied_weights_keys(self):
-            """Fallback property for models missing all_tied_weights_keys."""
-            if hasattr(self, '_tied_weights_keys'):
-                return dict(self._tied_weights_keys) if self._tied_weights_keys else {}
-            return {}
-        
-        @all_tied_weights_keys.setter
-        def all_tied_weights_keys(self, value):
-            """Setter that silently accepts assignments (needed during model init)."""
-            pass
-        
-        PreTrainedModel.all_tied_weights_keys = all_tied_weights_keys
-        PreTrainedModel._patch_applied = True
+    from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
-    # Load tokenizer without device mapping (simpler for custom models).
     hf_tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         trust_remote_code=True,
         local_files_only=True,
-        fix_mistral_regex=True,  # Suppress tokenizer regex warning for mistral-based models
+        fix_mistral_regex=True,
     )
 
-    # For custom models like InternVL3, avoid device_map heuristics that break on missing attributes.
-    # Load with device_map=None and move to device manually.
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True, local_files_only=True)
+
+    # InternVL3 is loaded via trust_remote_code, so its model class
+    # (InternVLChatModel) is NOT in AutoModelForCausalLM's static mapping --
+    # it must be resolved through config.auto_map instead.
+    class_ref = config.auto_map["AutoModelForCausalLM"]
+    model_class = get_class_from_dynamic_module(class_ref, model_name, local_files_only=True)
+
+    # Patch ONLY InternVL3's specific dynamic class -- never the shared
+    # PreTrainedModel base, and never AutoModelForCausalLM itself -- so
+    # BART and every other model loaded later in the same process keep
+    # their normal, correct tied-weights resolution untouched.
+    if not hasattr(model_class, '_all_tied_weights_keys_patch_applied'):
+        @property
+        def all_tied_weights_keys(self):
+            if hasattr(self, '_tied_weights_keys'):
+                return dict(self._tied_weights_keys) if self._tied_weights_keys else {}
+            return {}
+
+        @all_tied_weights_keys.setter
+        def all_tied_weights_keys(self, value):
+            pass
+
+        model_class.all_tied_weights_keys = all_tied_weights_keys
+        model_class._all_tied_weights_keys_patch_applied = True
+
     hf_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         device_map=None,
         trust_remote_code=True,
         local_files_only=True,
-        low_cpu_mem_usage=False,  # Disable to avoid further device_map issues
+        low_cpu_mem_usage=False,
     )
 
-    # Move model to GPU if available.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     hf_model = hf_model.to(device)
-
     if hf_tokenizer.pad_token is None:
         hf_tokenizer.pad_token = hf_tokenizer.eos_token
-
     return hf_model, hf_tokenizer
+
+
+@lru_cache(maxsize=2)
+def initialize_hf_text_encoder(model_name, device: str = "cpu"):
+    local_files_only = _is_local_model_name(model_name)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        local_files_only=local_files_only,
+    )
+    text_encoder = AutoModel.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        local_files_only=local_files_only,
+        dtype=torch.float16 if device != "cpu" and torch.cuda.is_available() else None,
+    )
+
+    text_encoder.to(device)
+    text_encoder.eval()
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return text_encoder, tokenizer
 
 
 @retry(
@@ -577,7 +614,10 @@ async def internvl3_14b_complete(
 
     if query_image_path:
         try:
-            image = Image.open(query_image_path).convert("RGB")
+            from .utils import resize_image_if_large
+
+            usable_path = resize_image_if_large(query_image_path)
+            image = Image.open(usable_path).convert("RGB")
             vision_infer = initialize_hf_vision_pipeline(model_name)
             kwargs.pop("hashing_kv", None)
             # vision_infer is now a callable that returns a string directly.
@@ -731,23 +771,28 @@ async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
         texts, return_tensors="pt", padding=True, truncation=True
     ).to(device)
     with torch.no_grad():
-        if hasattr(embed_model, "get_input_embeddings"):
+        if hasattr(embed_model, "get_input_embeddings"):  # General models like InternVL
             token_embeddings = embed_model.get_input_embeddings()(encoded["input_ids"])
-        else:
-            outputs = embed_model(encoded["input_ids"])
-            token_embeddings = outputs.last_hidden_state
-        embeddings = mean_pool_embeddings(token_embeddings, encoded["attention_mask"])
+            embeddings = mean_pool_embeddings(token_embeddings, encoded["attention_mask"])
+        else:  # Embedding models like bge
+            outputs = embed_model(**encoded)
+            embeddings = outputs.last_hidden_state[:, 0]
+    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
     return embeddings.detach().cpu().to(torch.float32).numpy()
 
 
-def create_internvl3_embedding(model_name: str = "./bin/pretrained/InternVL3-14B"):
+def create_bge_m3_embedding(
+    model_name: str = "./bin/pretrained/bge-m3",
+    device: str = "cpu",
+):
     model_name_norm = _normalize_local_model_name(model_name)
-    @wrap_embedding_func_with_attrs(embedding_dim=5120, max_token_size=8192)
-    async def internvl3_embedding(texts: list[str]) -> np.ndarray:
-        embed_model, tokenizer = initialize_hf_model(model_name_norm)
+
+    @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
+    async def bge_m3_embedding(texts: list[str]) -> np.ndarray:
+        embed_model, tokenizer = initialize_hf_text_encoder(model_name_norm, device=device)
         return await hf_embedding(texts, tokenizer, embed_model)
 
-    return internvl3_embedding
+    return bge_m3_embedding
 
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)

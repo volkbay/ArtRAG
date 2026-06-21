@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "artrag"
+version = "0.0.7"
+description = "Retrieval-Augmented Generation with Structured Context for Visual Art Understanding"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Shuai Wang" }]
+urls = { Homepage = "https://github.com/volkbay/ArtRAG", Paper = "https://arxiv.org/abs/2505.06020" }
+
+# Core runtime dependencies. PyTorch / torchvision / torchaudio are intentionally
+# omitted: the conda `reprise` env provides the CUDA-enabled builds, and letting
+# pip resolve them here would risk pulling in CPU-only wheels over the conda ones.
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "networkx",
+    "pillow",
+    "tqdm",
+    "pyyaml",
+    "requests",
+    "tiktoken",
+    "tenacity",
+    "nano-vectordb",
+    "openai",
+    "aioboto3",
+    "aiohttp",
+    "nest_asyncio",
+    "jsonlines",
+    "python-dotenv",
+    "datasets",
+    "einops",
+    "transformers>=4.38",
+    "accelerate>=0.20.3",
+    "safetensors",
+    "huggingface-hub",
+    "sentence-transformers",
+    "pycocoevalcap",
+    "evaluate",
+    "ftfy",
+    "regex",
+    "timm",
+]
+
+[project.optional-dependencies]
+# FlashAttention2 accelerates the InternVL3 attention kernels on Ampere+ GPUs.
+# Install after PyTorch is present, e.g. `pip install -e ".[flash]" --no-build-isolation`.
+flash = ["flash-attn>=2.5"]
+
+[tool.setuptools]
+packages = ["artrag"]

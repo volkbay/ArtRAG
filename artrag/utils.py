@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
@@ -14,6 +15,12 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import tiktoken
+from PIL import Image
+
+# Source art scans can be enormous (artpedia images reach hundreds of MB and
+# tens of thousands of pixels). Disable Pillow's decompression-bomb guard so we
+# can open them; we always downscale explicitly via resize_image_if_large below.
+Image.MAX_IMAGE_PIXELS = None
 
 ENCODER = None
 
@@ -294,7 +301,8 @@ def encode_image_to_base64(image_path: str) -> str:
         str: Base64 encoded string, empty string if encoding fails
     """
     try:
-        with open(image_path, "rb") as image_file:
+        usable_path = resize_image_if_large(image_path)
+        with open(usable_path, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
         return encoded_string
     except Exception as e:
@@ -354,3 +362,50 @@ def validate_image_file(image_path: str, max_size_mb: int = 50) -> bool:
     except Exception as e:
         logger.error(f"Error validating image file {image_path}: {e}")
         return False
+
+
+def resize_image_if_large(
+    image_path: str, max_dimension: int = 2048, output_dir: str = None
+) -> str:
+    """
+    Downscale an image whose longest side exceeds ``max_dimension``.
+
+    Very large source scans waste memory, slow inference, and can exceed API
+    upload limits. When the longest side is over ``max_dimension`` the image is
+    written to a resized JPEG copy (aspect ratio preserved) and that copy's path
+    is returned; otherwise the original path is returned unchanged. The original
+    file is never modified.
+
+    Args:
+        image_path: Path to the source image.
+        max_dimension: Maximum allowed length (px) of the longest side.
+        output_dir: Directory for the resized copy. Defaults to the system temp
+            directory.
+
+    Returns:
+        str: Path to an image whose longest side is <= ``max_dimension``. Falls
+        back to the original path if resizing fails.
+    """
+    try:
+        with Image.open(image_path) as img:
+            width, height = img.size
+            longest = max(width, height)
+            if longest <= max_dimension:
+                return str(image_path)
+
+            scale = max_dimension / longest
+            new_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+            resized = img.convert("RGB").resize(new_size, Image.LANCZOS)
+
+        out_dir = Path(output_dir) if output_dir else Path(tempfile.gettempdir())
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{Path(image_path).stem}_resized_{new_size[0]}x{new_size[1]}.jpg"
+        resized.save(out_path, format="JPEG", quality=95)
+        logger.info(
+            f"Resized large image {image_path} ({width}x{height}) -> "
+            f"{out_path} ({new_size[0]}x{new_size[1]})"
+        )
+        return str(out_path)
+    except Exception as e:
+        logger.error(f"Failed to resize image {image_path}: {e}")
+        return str(image_path)

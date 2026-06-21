@@ -792,7 +792,7 @@ Your goal is to rank them in order of how useful they are for explaining the pai
 
 #######
 Output:
-Provide the reordered full list of all entity numbers in order of relevance from high to low, separated by commas.
+Provide the reordered full list of all entity numbers in order of relevance from high to low, separated by commas. Do not output anything else.
 Example Output:
 3, 1, 5, 2, 4
 

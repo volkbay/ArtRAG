@@ -418,7 +418,7 @@ async def local_query(
     else:
         query = input_
     metadata = extract_metadata(query)
-    print(f"DEBUG - Extracted metadata: {metadata}")
+    print(f"DEBUG - Extracted metadata:\n{metadata}")
     kw_prompt = kw_prompt_temp.format(query=metadata)
     result = await use_model_func(
         kw_prompt, query_image_path = query_image)
@@ -545,7 +545,7 @@ async def _build_local_query_context(
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]
-    print(f"DEBUG: Retrieved node data: {node_datas}")  #TODO burada kaldım
+    print(f"DEBUG: Retrieved node data: {node_datas}")
     node_datas, use_relations = await nodes_expansion(
         node_datas, query_param, knowledge_graph_inst
     )
@@ -622,7 +622,7 @@ async def nodes_expansion(
     all_edges_data = truncate_list_by_token_size(
         all_edges_data,
         key=lambda x: x["description"],
-        max_token_size=query_param.max_token_for_global_context,
+        max_token_size=query_param.max_token_for_global_context,  # TODO check
     )
     # Collect new nodes from the expanded edges
     new_node_names = set()
