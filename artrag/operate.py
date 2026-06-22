@@ -529,7 +529,13 @@ async def _build_local_query_context(
     """
     Build the local query context, including entities and relationships, and rerank them based on the visual-language model (VLM) scores.
     """
-    results = await entities_vdb.query(keywords, top_k=query_param.top_k)
+    # Enrich the retrieval query: keywords alone (a bare comma list) dilute the
+    # query vector, whereas appending the structured metadata (artist, title,
+    # school, year...) reinforces the salient entities. Empirically this lifts
+    # the relevant artist/painting nodes to the top of the ranking.
+    metadata = extract_metadata(query_text)
+    retrieval_query = f"{keywords}\n{metadata}" if metadata and metadata != query_text else keywords
+    results = await entities_vdb.query(retrieval_query, top_k=query_param.top_k)
     if not len(results):
         return None
     node_datas = await asyncio.gather(

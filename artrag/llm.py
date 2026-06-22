@@ -765,18 +765,46 @@ def mean_pool_embeddings(token_embeddings: torch.Tensor, attention_mask: torch.T
     return summed / counts
 
 
-async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
+async def hf_embedding(
+    texts: list[str], tokenizer, embed_model, pooling: str = "cls"
+) -> np.ndarray:
+    """Encode texts with a HuggingFace model and L2-normalize the result.
+
+    pooling:
+      - "cls" (default): run the full transformer and take the [CLS] token of
+        the last hidden state. This is the *contextual* sentence embedding and
+        the pooling BGE/BGE-M3 are trained with -- use it for any real encoder.
+      - "mean": run the transformer and mean-pool the last hidden state over the
+        attention mask.
+      - "input_mean": mean-pool the *static* input-embedding lookup table without
+        running the transformer. This is a degenerate bag-of-token-vectors with
+        no contextualization; only meaningful as a fallback for decoder/VLM
+        models (e.g. InternVL) that are not encoders.
+
+    NOTE: ``input_mean`` was previously selected automatically via
+    ``hasattr(embed_model, "get_input_embeddings")``, but *every* HF model has
+    that attribute, so BGE-M3 silently fell into the static-lookup path -- the
+    transformer was never run and retrieval was essentially random. Pooling is
+    now explicit so the stored index and queries always use the same encoder.
+    """
     device = next(embed_model.parameters()).device if hasattr(embed_model, "parameters") else torch.device("cpu")
     encoded = tokenizer(
         texts, return_tensors="pt", padding=True, truncation=True
     ).to(device)
     with torch.no_grad():
-        if hasattr(embed_model, "get_input_embeddings"):  # General models like InternVL
+        if pooling == "input_mean":
             token_embeddings = embed_model.get_input_embeddings()(encoded["input_ids"])
             embeddings = mean_pool_embeddings(token_embeddings, encoded["attention_mask"])
-        else:  # Embedding models like bge
+        else:
             outputs = embed_model(**encoded)
-            embeddings = outputs.last_hidden_state[:, 0]
+            if pooling == "mean":
+                embeddings = mean_pool_embeddings(
+                    outputs.last_hidden_state, encoded["attention_mask"]
+                )
+            elif pooling == "cls":
+                embeddings = outputs.last_hidden_state[:, 0]
+            else:
+                raise ValueError(f"Unknown pooling strategy: {pooling!r}")
     embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
     return embeddings.detach().cpu().to(torch.float32).numpy()
 
@@ -790,7 +818,9 @@ def create_bge_m3_embedding(
     @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
     async def bge_m3_embedding(texts: list[str]) -> np.ndarray:
         embed_model, tokenizer = initialize_hf_text_encoder(model_name_norm, device=device)
-        return await hf_embedding(texts, tokenizer, embed_model)
+        # BGE-M3 is trained with CLS pooling + L2 normalization; anything else
+        # (especially the old static-lookup path) wrecks retrieval quality.
+        return await hf_embedding(texts, tokenizer, embed_model, pooling="cls")
 
     return bge_m3_embedding
 
