@@ -1,4 +1,5 @@
 from .lightrag import LightRAG as LightRAG, QueryParam as QueryParam
+from .runtime_config import configure as configure, settings as settings
 
 # Import evaluation and inference utilities
 from . import evaluation

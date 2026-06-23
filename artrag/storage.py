@@ -10,6 +10,7 @@ from multiprocessing.synchronize import Lock as ProcessLock
 import pdb
 
 from .utils import load_json, logger, write_json, compute_mdhash_id
+from .runtime_config import settings
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -68,7 +69,8 @@ class JsonKVStorage(BaseKVStorage):
 
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = 0.2
+    # Default sourced from the config center; still overridable via global_config.
+    cosine_better_than_threshold: float = settings.cosine_threshold
 
     def __post_init__(self):
         self._storage_lock = get_storage_lock()
@@ -79,8 +81,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim, storage_file=self._client_file_name
         )
+        # Read at instantiation (after artrag.configure) so the config center wins;
+        # an explicit global_config entry still overrides it.
         self.cosine_better_than_threshold = self.global_config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
+            "cosine_better_than_threshold", settings.cosine_threshold
         )
 
     async def upsert(self, data: dict[str, dict]):

@@ -21,7 +21,8 @@ from tenacity import (
 from torchvision.transforms.functional import InterpolationMode
 
 from .base import BaseKVStorage
-from .utils import compute_args_hash, wrap_embedding_func_with_attrs
+from .utils import compute_args_hash, logger, wrap_embedding_func_with_attrs
+from .runtime_config import settings
 
 # Try to load .env file if python-dotenv is available
 try:
@@ -564,7 +565,7 @@ def initialize_hf_vision_pipeline(model_name):
                 pixel_values = hf_model.image_processor(
                     image, return_tensors="pt"
                 )["pixel_values"].to(device_str)
-                print(f'DEBUG - 1.Type of pixel_values: {pixel_values.dtype}, shape: {pixel_values.shape}')
+                logger.debug("pixel_values dtype=%s shape=%s", pixel_values.dtype, tuple(pixel_values.shape))
             else:
                 # Prep the tensor using the custom function above
                 # (Sets dynamic patching to 448x448 blocks, max 12 tiles)
@@ -624,7 +625,7 @@ async def internvl3_14b_complete(
             output = vision_infer(image, prompt=prompt)
             return str(output).strip()
         except Exception as exc:
-            print(f"Warning: InterVL3 image generation failed, falling back to text-only mode: {exc}")
+            logger.warning("InternVL3 image generation failed, falling back to text-only mode: %s", exc)
 
     if not model_name:
         raise ValueError(

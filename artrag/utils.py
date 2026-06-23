@@ -27,21 +27,64 @@ ENCODER = None
 logger = logging.getLogger("lightrag")
 
 
+_DETAIL_FORMATTER = logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
+
 def set_logger(log_file: str):
-    # Set to INFO level to reduce verbose DEBUG logs
-    # Use DEBUG only when troubleshooting
-    logger.setLevel(logging.INFO)
+    """Three-tier logging.
+
+    * console handler (INFO, compact)         -> concise per-sample flow on the terminal
+    * persistent `log_file` handler (INFO)    -> general cross-sample flow (lightrag.log)
+    * per-sample handlers (DEBUG, attached on
+      demand via add_sample_logfile)          -> full detail for one sample
+
+    The full DEBUG trail (descriptions, scores, VLM/final ranking, summaries) is
+    captured by the per-sample handler, NOT lightrag.log, so the flow log stays
+    small. The terminal never shows DEBUG. Re-running is idempotent.
+    """
+    logger.setLevel(logging.DEBUG)
+    # Don't propagate to the root logger: a dependency may call logging.basicConfig
+    # (adding a root handler), which would otherwise duplicate every line AND leak
+    # our DEBUG detail onto the console. Our own handlers are the only sinks.
+    logger.propagate = False
+
+    if logger.handlers:
+        return
 
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(_DETAIL_FORMATTER)
+    logger.addHandler(file_handler)
 
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    file_handler.setFormatter(formatter)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(console_handler)
 
-    if not logger.handlers:
-        logger.addHandler(file_handler)
+
+def add_sample_logfile(path: str) -> logging.Handler:
+    """Attach a per-sample DEBUG file handler capturing the full detail trail.
+
+    Always detailed regardless of the `verbose` setting (verbose only governs
+    terminal transformer noise). Pair every call with remove_sample_logfile.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    handler = logging.FileHandler(path, mode="w")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_DETAIL_FORMATTER)
+    logger.addHandler(handler)
+    return handler
+
+
+def remove_sample_logfile(handler: logging.Handler) -> None:
+    """Detach and close a handler returned by add_sample_logfile."""
+    if handler is None:
+        return
+    handler.flush()
+    logger.removeHandler(handler)
+    handler.close()
 
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
     """

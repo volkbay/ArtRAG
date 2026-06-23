@@ -169,9 +169,9 @@ Add sections and commentary to the response as appropriate for the length and fo
 
 PROMPTS["zero-shot_response"] = """---Goal---
 
-Generate a description of the target length and format that responds to the user's question, summarizing all information in the input data tables and incorporating any relevant general knowledge.  
-If you don't know the answer, just say so. Do not make anything up.  
-Do not include information where the supporting evidence for it is not provided.
+Generate a description of the target length and format that responds to the user's question, grounding your description in the information provided in the input data tables (the retrieved knowledge-graph context). Treat the data tables as the primary, authoritative source: every art-historical, biographical, symbolic, or contextual claim must be supported by them. You may rely on the painting image and general knowledge only to phrase, connect, or visually describe what is depicted (Content and Form) — never to introduce new facts, attributions, dates, or context (Context) that the data tables do not support.
+If the data tables do not cover something, say so plainly rather than filling it in from memory. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided in the data tables.
 
 ---Target response length and format---
 
@@ -197,9 +197,9 @@ The definitions of these elements are:
 
 ---Goal---
 
-Generate a description of the target length and format that responds to the user's question, summarizing all information in the input data tables and incorporating any relevant general knowledge.  
-If you don't know the answer, just say so. Do not make anything up.  
-Do not include information where the supporting evidence for it is not provided.
+Generate a description of the target length and format that responds to the user's question, grounding your description in the information provided in the input data tables (the retrieved knowledge-graph context). Treat the data tables as the primary, authoritative source: every art-historical, biographical, symbolic, or contextual claim must be supported by them. You may rely on the painting image and general knowledge only to phrase, connect, or visually describe what is depicted (Content and Form) — never to introduce new facts, attributions, dates, or context (Context) that the data tables do not support.
+If the data tables do not cover something, say so plainly rather than filling it in from memory. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided in the data tables.
 
 ---Target response length and format---
 
@@ -251,9 +251,9 @@ The definitions of these elements are:
 
 ---Goal---
 
-Generate a description of the target length and format that responds to the user's question, summarizing all information in the input data tables and incorporating relevant general knowledge from it.  
-If you don't know the answer, just say so. Do not make anything up.  
-Do not include information where the supporting evidence for it is not provided.
+Generate a description of the target length and format that responds to the user's question, grounding your description in the information provided in the input data tables (the retrieved knowledge-graph context). Treat the data tables as the primary, authoritative source: every art-historical, biographical, symbolic, or contextual claim must be supported by them. You may rely on the painting image and general knowledge only to phrase, connect, or visually describe what is depicted (Content and Form) — never to introduce new facts, attributions, dates, or context (Context) that the data tables do not support.
+If the data tables do not cover something, say so plainly rather than filling it in from memory. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided in the data tables.
 
 ---Target response length and format---
 
@@ -344,9 +344,9 @@ The definitions of these elements are:
 
 ---Goal---
 
-Generate a description of the target length and format that responds to the user's question, summarizing all information in the input data tables and incorporating relevant general knowledge from it.  
-If you don't know the answer, just say so. Do not make anything up.  
-Do not include information where the supporting evidence for it is not provided.
+Generate a description of the target length and format that responds to the user's question, grounding your description in the information provided in the input data tables (the retrieved knowledge-graph context). Treat the data tables as the primary, authoritative source: every art-historical, biographical, symbolic, or contextual claim must be supported by them. You may rely on the painting image and general knowledge only to phrase, connect, or visually describe what is depicted (Content and Form) — never to introduce new facts, attributions, dates, or context (Context) that the data tables do not support.
+If the data tables do not cover something, say so plainly rather than filling it in from memory. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided in the data tables.
 
 ---Target response length and format---
 
@@ -429,9 +429,9 @@ The definitions of these elements are:
 
 ---Goal---
 
-Generate a description of the target length and format that responds to the user's question, summarizing all information in the input data tables and incorporating any relevant general knowledge.  
-If you don't know the answer, just say so. Do not make anything up.  
-Do not include information where the supporting evidence for it is not provided.
+Generate a description of the target length and format that responds to the user's question, grounding your description in the information provided in the input data tables (the retrieved knowledge-graph context). Treat the data tables as the primary, authoritative source: every art-historical, biographical, symbolic, or contextual claim must be supported by them. You may rely on the painting image and general knowledge only to phrase, connect, or visually describe what is depicted (Content and Form) — never to introduce new facts, attributions, dates, or context (Context) that the data tables do not support.
+If the data tables do not cover something, say so plainly rather than filling it in from memory. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided in the data tables.
 
 ---Target response length and format---
 
@@ -544,9 +544,9 @@ The definitions of these elements are:
 - **Context**: Background information about the historical, cultural, or biographical influences relevant to the painting.
 ---Goal---
 
-Generate a description of the target length and format that responds to the user's question, summarizing all information in the input data tables and incorporating any relevant general knowledge.  
-If you don't know the answer, just say so. Do not make anything up.  
-Do not include information where the supporting evidence for it is not provided.
+Generate a description of the target length and format that responds to the user's question, grounding your description in the information provided in the input data tables (the retrieved knowledge-graph context). Treat the data tables as the primary, authoritative source: every art-historical, biographical, symbolic, or contextual claim must be supported by them. You may rely on the painting image and general knowledge only to phrase, connect, or visually describe what is depicted (Content and Form) — never to introduce new facts, attributions, dates, or context (Context) that the data tables do not support.
+If the data tables do not cover something, say so plainly rather than filling it in from memory. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided in the data tables.
 
 ---Target response length and format---
 
@@ -597,9 +597,9 @@ The definitions of these elements are:
 
 ---Goal---
 
-Generate a description of the target length and format that responds to the user's question, summarizing all information in the input data tables and incorporating any relevant general knowledge.  
-If you don't know the answer, just say so. Do not make anything up.  
-Do not include information where the supporting evidence for it is not provided.
+Generate a description of the target length and format that responds to the user's question, grounding your description in the information provided in the input data tables (the retrieved knowledge-graph context). Treat the data tables as the primary, authoritative source: every art-historical, biographical, symbolic, or contextual claim must be supported by them. You may rely on the painting image and general knowledge only to phrase, connect, or visually describe what is depicted (Content and Form) — never to introduce new facts, attributions, dates, or context (Context) that the data tables do not support.
+If the data tables do not cover something, say so plainly rather than filling it in from memory. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided in the data tables.
 
 ---Target response length and format---
 
@@ -792,7 +792,7 @@ Your goal is to rank them in order of how useful they are for explaining the pai
 
 #######
 Output:
-Provide the reordered full list of all entity numbers in order of relevance from high to low, separated by commas. Do not output anything else.
+Provide the reordered full list of all entity numbers in order of relevance from high to low, separated by commas. Do not output anything else. Double-check if all the entity indices are included and they are not duplicated.
 Example Output:
 3, 1, 5, 2, 4
 

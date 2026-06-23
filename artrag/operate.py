@@ -418,7 +418,7 @@ async def local_query(
     else:
         query = input_
     metadata = extract_metadata(query)
-    print(f"DEBUG - Extracted metadata:\n{metadata}")
+    logger.info("Sample metadata: %s", metadata.replace("\n", " | ") if isinstance(metadata, str) else metadata)
     kw_prompt = kw_prompt_temp.format(query=metadata)
     result = await use_model_func(
         kw_prompt, query_image_path = query_image)
@@ -441,11 +441,12 @@ async def local_query(
             keywords = ", ".join(keywords)
         # Handle parsing error
         except json.JSONDecodeError as e:
-            print(f"JSON parsing error: {e}")
+            logger.warning("Keyword JSON parsing error: %s", e)
             return PROMPTS["fail_response"]
-    print(f"Extracted keywords: {keywords}")
+    logger.info("Extracted keywords: %s", keywords)
+    struct = None
     if keywords:
-        rerank_context, beforererank_context = await _build_local_query_context(
+        rerank_context, beforererank_context, struct = await _build_local_query_context(
             query,
             query_image,
             keywords,
@@ -514,7 +515,7 @@ async def local_query(
             .replace("</system>", "")
             .strip()
         )
-    return response, beforererank_context, rerank_context
+    return response, beforererank_context, rerank_context, struct
 
 
 async def _build_local_query_context(
@@ -547,13 +548,28 @@ async def _build_local_query_context(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
     node_datas = [
-        {**n, "entity_name": k["entity_name"], "rank": d}
+        {**n, "entity_name": k["entity_name"], "rank": d, "distance": k.get("distance")}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]
-    print(f"DEBUG: Retrieved node data: {node_datas}")
+    logger.debug(
+        "Retrieved %d entities: %s",
+        len(node_datas),
+        ", ".join(f"{n['entity_name']}({n.get('distance')})" for n in node_datas),
+    )
+    # Snapshot the retrieved entities BEFORE rerank mutates (summarizes) descriptions.
+    retrieved_entities = [
+        {
+            "entity": n["entity_name"],
+            "type": n.get("entity_type", "UNKNOWN"),
+            "similarity": n.get("distance"),
+            "degree": n.get("rank"),
+            "description": n.get("description"),
+        }
+        for n in node_datas
+    ]
     node_datas, use_relations = await nodes_expansion(
-        node_datas, query_param, knowledge_graph_inst
+        node_datas, query_param, knowledge_graph_inst, top_k=query_param.top_k_expansion
     )
     logger.info(
         f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations"
@@ -579,9 +595,9 @@ async def _build_local_query_context(
         ```
         """
     
-    after_rerank_context = f""" 
-        -----Entities-----      
-        ```csv      
+    after_rerank_context = f"""
+        -----Entities-----
+        ```csv
         {rerank_entities_context}
         ```
         -----Relationships-----
@@ -589,7 +605,39 @@ async def _build_local_query_context(
         {rerank_relations_context}
         ```
         """
-    return after_rerank_context, before_rerank_context
+    # Structured, machine-readable view of the retrieval — written to the per-sample
+    # JSON so entities are individually selectable (vs. the CSV-in-fence strings above).
+    # Coerce numpy scalars (vdb distances / softmax scores) to native floats so the
+    # struct is JSON-serializable.
+    def _f(x):
+        return float(x) if x is not None else None
+
+    struct = {
+        "retrieved_entities": [
+            {**e, "similarity": _f(e.get("similarity"))} for e in retrieved_entities
+        ],
+        "reranked_entities": [
+            {
+                "entity": n["entity_name"],
+                "type": n.get("entity_type", "UNKNOWN"),
+                "vlm_score": _f(n.get("vlm_score")),
+                "degree": n.get("rank"),
+                "final_score": _f(n.get("final_score")),
+                "description": n.get("description"),
+            }
+            for n in reranked_nodes
+        ],
+        "relations": [
+            {
+                "source": e["src_tgt"][0],
+                "target": e["src_tgt"][1],
+                "weight": _f(e.get("weight")),
+                "description": e.get("description"),
+            }
+            for e in reranked_edges
+        ],
+    }
+    return after_rerank_context, before_rerank_context, struct
 
 
 async def nodes_expansion(

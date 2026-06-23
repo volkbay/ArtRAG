@@ -24,6 +24,7 @@ dependencies = [
     "pillow",
     "tqdm",
     "pyyaml",
+    "omegaconf",
     "requests",
     "tiktoken",
     "tenacity",

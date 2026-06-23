@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import re
 import threading
 from typing import Dict, List
@@ -9,11 +8,15 @@ import torch
 from transformers import AutoTokenizer, BartForConditionalGeneration
 
 from .prompt_art import PROMPTS
+from .runtime_config import settings
+from .utils import logger
 
-logger = logging.getLogger(__name__)
- 
-_MODEL_NAME = "./bin/pretrained/bart-large-cnn"
-_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Tunables now live in the config center (cfg/default.yaml -> artrag.settings):
+#   settings.bart_model_path     summarizer checkpoint
+#   settings.device              cuda/cpu
+#   settings.rerank_blurb_words  short blurb shown to the VLM listwise reranker
+#   settings.context_word_budget per-rank final-context word budget (top entities
+#                                keep detail; low-ranked ones are compressed harder)
 
 _model = None
 _tokenizer = None
@@ -27,12 +30,12 @@ def _load_model():
     with _load_lock:
         if _model is not None:  # re-check after acquiring lock
             return
-        logger.info(f"Loading {_MODEL_NAME} on {_DEVICE} ...")
-        _tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME)
+        logger.info(f"Loading {settings.bart_model_path} on {settings.device} ...")
+        _tokenizer = AutoTokenizer.from_pretrained(settings.bart_model_path)
         _model = BartForConditionalGeneration.from_pretrained(
-            _MODEL_NAME,
-            dtype=torch.float16 if _DEVICE == "cuda" else torch.float32,
-        ).to(_DEVICE)
+            settings.bart_model_path,
+            dtype=torch.float16 if settings.device == "cuda" else torch.float32,
+        ).to(settings.device)
         _model.eval()
         logger.info("BART summarizer loaded.")
  
@@ -60,7 +63,7 @@ def _generate_sync(text: str, max_length: int, min_length: int) -> str:
         max_length=1024,        # BART's encoder context limit
         truncation=True,
         return_tensors="pt",
-    ).to(_DEVICE)
+    ).to(settings.device)
  
     with torch.no_grad():
         summary_ids = _model.generate(
@@ -80,24 +83,25 @@ def _generate_sync(text: str, max_length: int, min_length: int) -> str:
     )[0].strip()
 
 
-async def summarize_description(text, use_model_func=None):
+async def summarize_description(text, use_model_func=None, max_words=70):
     """
-    Summarizes a long description using the configured LLM.
+    Summarizes a long description down to roughly `max_words` words.
     Uses use_model_func for compatibility with the existing async pipeline.
+    `max_words` lets callers request rank-aware budgets: top entities keep more
+    detail, low-ranked entities are compressed harder.
     """
     global  _model
-    if len(text.split()) < 30:  # If already short, return as is
-        print("DEBUG - Text already short.", text)
+    if len(text.split()) <= max_words:  # If already within budget, return as is
+        logger.debug("Summarize skipped (already <= %d words)", max_words)
         return text
- 
+
     try:
-        if _MODEL_NAME.endswith('bart-large-cnn'):
-            print("DEBUG - Text getting summarized.", text)
-            max_length = 100
-            min_length = 10
+        if settings.bart_model_path.endswith('bart-large-cnn'):
+            max_length = max(20, int(max_words * 1.4))   # words -> BART output tokens
+            min_length = min(10, max_length // 4)
             summary = await asyncio.to_thread(_generate_sync, text, max_length, min_length)
-            print("DEBUG - summary", summary)
-        elif _MODEL_NAME.endswith('InternVL3-14B'): 
+            logger.debug("Summarized %d -> %d words", len(text.split()), len(summary.split()))
+        elif settings.bart_model_path.endswith('InternVL3-14B'):
             # prompt = f"Summarize the following text within 30 words, keeping only the most relevant information:\n\n{text}"
             prompt = f"Summarize the following text in short sentences, keeping only the most relevant information:\n\n{text}"
             summary = await use_model_func(prompt)
@@ -131,6 +135,8 @@ def softmax_normalize(scores_dict):
     Applies softmax normalization to a dictionary of scores.
     Ensures smoother differentiation, making top scores more prominent.
     """
+    if not scores_dict:
+        return {}
     scores = np.array(list(scores_dict.values()), dtype=np.float32)
 
     # Avoiding overflow issues by subtracting max before exponentiation
@@ -163,12 +169,15 @@ async def rerank_nodes_with_vlm(
     # Build listwise ranking prompt
     ranking_prompt = PROMPTS["rerank_entities"]
     ranking_prompt = ranking_prompt.format(
-        Metadata=painting_metadata, entities=[f"{i+1}. {node['entity_name']}: {node['description']}" for i, node in enumerate(nodes)]
+        Metadata=painting_metadata,
+        entities=[
+            f"{i+1}. {node['entity_name']}: {node.get('rerank_blurb', node['description'])}"
+            for i, node in enumerate(nodes)
+        ],
     )
-    print(f"DEBUG: Ranking prompt: {ranking_prompt}")
-    # Call the VLM with the listwise ranking prompt
+    # Call the VLM with the listwise ranking prompt (prompt itself is static -> not logged)
     response = await use_model_func(ranking_prompt, query_image_path=image_path)
-    print(f"DEBUG: Ranking response: {response}")
+    logger.debug("VLM ranking response: %s", response)
 
     try:
         # Extract ranked order from the model's response
@@ -177,6 +186,12 @@ async def rerank_nodes_with_vlm(
     except Exception as e:
         logger.warning(f"Failed to parse VLM ranking response: {e}")
         ranked_nodes = nodes  # If ranking fails, return the original list
+    # An empty/garbage response (e.g. the VLM OOM'd and fell back to text-only with
+    # no parseable order) yields no ranked nodes -> fall back to the retrieval order
+    # so downstream scoring isn't handed an empty set.
+    if not ranked_nodes:
+        logger.warning("VLM ranking produced no order; falling back to retrieval order")
+        ranked_nodes = nodes
     # Create a dictionary to store VLM rank scores (higher is better)
     vlm_rank_scores = {node["entity_name"]: len(nodes) - i for i, node in enumerate(ranked_nodes)}
 
@@ -211,22 +226,37 @@ async def dual_passage_rerank(
     if not nodes:
         return []
 
-    # Summarize long descriptions
-    print(f"DEBUG: Before summarization: {[node['description'] for node in nodes]}")
+    # Build a short, length-normalized blurb for the listwise reranker WITHOUT
+    # mutating each node's full description (which still feeds the final context).
+    # This keeps the ranking prompt compact and prevents a verbose entity from
+    # winning the ranking just because it has more text.
+    # Candidates entering rerank: name, graph degree, and retrieval similarity.
+    # Full descriptions are NOT dumped here (they reach the logfile once, post-budget).
+    logger.info(
+        "Rerank candidates (%d): %s",
+        len(nodes),
+        ", ".join(
+            f"{n['entity_name']}(deg={n.get('rank')}, sim={n.get('distance'):.3f})"
+            if n.get("distance") is not None
+            else f"{n['entity_name']}(deg={n.get('rank')})"
+            for n in nodes
+        ),
+    )
     for node in nodes:
-        node["description"] = await summarize_description(node.get("description", "UNKNOWN"), use_model_func)
+        node["rerank_blurb"] = await summarize_description(
+            node.get("description", "UNKNOWN"), use_model_func, max_words=settings.rerank_blurb_words
+        )
         if "source_id" in node:
             del node["source_id"]
-    print(f"DEBUG: After summarization: {[node['description'] for node in nodes]}")
     # Step 1: Get VLM listwise ranking scores
     vlm_ranked_nodes, vlm_rank_scores = await rerank_nodes_with_vlm(image_path, painting_metadata, nodes, use_model_func )
-    print(f"DEBUG: VLM ranked scores: {vlm_rank_scores}")
+    logger.info("VLM ranking: %s", " > ".join(n["entity_name"] for n in vlm_ranked_nodes))
     # Step 2: Compute node degree ranking scores
     degree_scores = {node["entity_name"]: node["rank"] for node in nodes}
 
     vlm_rank_scores = softmax_normalize(vlm_rank_scores)
     degree_scores = softmax_normalize(degree_scores)
-    
+
     # Step 3: Combine rankings with specified weights
     degree_weight = 1 - vlm_weight
     final_scores = {
@@ -234,9 +264,35 @@ async def dual_passage_rerank(
                             degree_weight * degree_scores.get(node["entity_name"], 0)
         for node in nodes
     }
-
     # Step 4: Sort nodes based on final combined score
     final_reranked_nodes = sorted(nodes, key=lambda x: final_scores[x["entity_name"]], reverse=True)[0:topn]
+    logger.info(
+        "Final ranking (top %d): %s",
+        len(final_reranked_nodes),
+        ", ".join(f"{n['entity_name']}({final_scores[n['entity_name']]:.3f})" for n in final_reranked_nodes),
+    )
+
+    # Step 5: Apply a rank-aware word budget to the descriptions that actually
+    # reach the final context. Top entities keep their full detail; lower-ranked
+    # (often more generic) entities are compressed harder so they cannot dominate
+    # the response by volume. Short descriptions pass through untouched.
+    budgets = settings.context_word_budget
+    for i, node in enumerate(final_reranked_nodes):
+        # Carry the (normalized) component + combined scores so downstream output
+        # (the per-sample JSON) can report why each entity ranked where it did.
+        name = node["entity_name"]
+        node["vlm_score"] = vlm_rank_scores.get(name)
+        node["degree_score"] = degree_scores.get(name)
+        node["final_score"] = final_scores.get(name)
+        budget = budgets[i] if i < len(budgets) else budgets[-1]
+        node["description"] = await summarize_description(
+            node.get("description", "UNKNOWN"), use_model_func, max_words=budget
+        )
+        node.pop("rerank_blurb", None)
+    # Final, budgeted descriptions -> logfile only (DEBUG), once.
+    for node in final_reranked_nodes:
+        logger.debug("Final context [%s]: %s", node["entity_name"], node["description"])
+
     inter_edges = await find_interconnected_edges([node["entity_name"] for node in final_reranked_nodes], knowledge_graph_inst)
 
     return final_reranked_nodes, inter_edges

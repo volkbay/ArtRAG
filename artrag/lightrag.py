@@ -40,6 +40,7 @@ from .utils import (
     encode_image_to_base64,
     validate_image_file,
 )
+from .runtime_config import settings
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -114,7 +115,11 @@ class LightRAG:
     convert_response_to_json_func: callable = convert_response_to_json
 
     def __post_init__(self):
-        log_file = os.path.join(self.working_dir, "lightrag.log")
+        # General-flow log goes to settings.log_dir (the repo log/), not the graph
+        # working_dir; falls back to working_dir if no log_dir was configured.
+        log_root = settings.log_dir or self.working_dir
+        os.makedirs(log_root, exist_ok=True)
+        log_file = os.path.join(log_root, "lightrag.log")
         set_logger(log_file)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
 
@@ -265,8 +270,9 @@ class LightRAG:
 
     async def aquery(self, query: str, param: QueryParam = QueryParam()):
 
+        struct = None
         if param.mode == "local":
-            response, beforererank_context, rerank_context = await local_query(
+            response, beforererank_context, rerank_context, struct = await local_query(
                 query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
@@ -294,7 +300,7 @@ class LightRAG:
         else:
             raise ValueError(f"Unknown mode {param.mode}")
         await self._query_done()
-        return response, beforererank_context, rerank_context
+        return response, beforererank_context, rerank_context, struct
 
     async def _query_done(self):
         tasks = []
@@ -436,7 +442,7 @@ class LightRAG:
             local_query_input = retrieval_query
         
         query_param = QueryParam(mode="local", only_need_context=True, **kwargs)
-        response, beforererank_context, rerank_context = await local_query(
+        response, beforererank_context, rerank_context, _struct = await local_query(
             local_query_input,
             self.chunk_entity_relation_graph,
             self.entities_vdb,
@@ -779,7 +785,7 @@ class LightRAG:
             for entity_name in source_entities:
                 node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
                 if not node_data:
-                    print(f"Source entity '{entity_name}' does not exist")
+                    logger.warning(f"Source entity '{entity_name}' does not exist")
                     continue
                     # raise ValueError(f"Source entity '{entity_name}' does not exist")
                 source_entities_data[entity_name] = node_data
