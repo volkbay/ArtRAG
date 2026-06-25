@@ -3,8 +3,9 @@ import json
 import re
 from typing import Union
 from collections import Counter, defaultdict
-import warnings
-import pdb
+
+import numpy as np
+
 from .utils import (
     logger,
     clean_str,
@@ -12,7 +13,6 @@ from .utils import (
     decode_tokens_by_tiktoken,
     encode_string_by_tiktoken,
     is_float_regex,
-    list_of_list_to_csv,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -518,10 +518,32 @@ async def local_query(
     return response, beforererank_context, rerank_context, struct
 
 
+async def _attach_missing_distances(node_data, retrieval_query, embedding_func, batch_size=16):
+    """Fill in cosine similarity for nodes that lack a vdb `distance` (the expanded,
+    one-hop nodes). Embeds them against `retrieval_query` (the exact query string used
+    for the initial vdb retrieval) with the same encoder, so the resulting scores are
+    directly comparable to the retrieved nodes' distances. bge-m3 vectors are
+    L2-normalized, so cosine similarity is the dot product.
+    """
+    missing = [n for n in node_data if n.get("distance") is None]
+    if not missing:
+        return
+    query_vec = np.asarray((await embedding_func([retrieval_query]))[0], dtype=np.float32)
+    contents = [
+        f"entity: {n['entity_name']}\ndescription: {n.get('description', '')}"
+        for n in missing
+    ]
+    embeddings = []
+    for i in range(0, len(contents), batch_size):
+        embeddings.extend(await embedding_func(contents[i : i + batch_size]))
+    for n, emb in zip(missing, embeddings):
+        n["distance"] = float(np.dot(query_vec, np.asarray(emb, dtype=np.float32)))
+
+
 async def _build_local_query_context(
     query_text,
     query_image,
-    keywords, 
+    keywords,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     query_param: QueryParam,
@@ -539,25 +561,40 @@ async def _build_local_query_context(
     results = await entities_vdb.query(retrieval_query, top_k=query_param.top_k)
     if not len(results):
         return None
-    node_datas = await asyncio.gather(
+    node_data = await asyncio.gather(
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
     )
-    if not all([n is not None for n in node_datas]):
+    if not all([n is not None for n in node_data]):
         logger.warning("Some nodes are missing, maybe the storage is damaged")
     node_degrees = await asyncio.gather(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
-    node_datas = [
+    node_data = [
         {**n, "entity_name": k["entity_name"], "rank": d, "distance": k.get("distance")}
-        for k, n, d in zip(results, node_datas, node_degrees)
+        for k, n, d in zip(results, node_data, node_degrees)
         if n is not None
     ]
     logger.debug(
-        "Retrieved %d entities: %s",
-        len(node_datas),
-        ", ".join(f"{n['entity_name']}({n.get('distance')})" for n in node_datas),
+        "Retrieved (vdb) %d entities: %s",
+        len(node_data),
+        ", ".join(f"{n['entity_name']}({n.get('distance')})" for n in node_data),
     )
-    # Snapshot the retrieved entities BEFORE rerank mutates (summarizes) descriptions.
+    node_data, use_relations = await nodes_expansion(
+        node_data, query_param, knowledge_graph_inst, top_k=query_param.top_k_expansion
+    )
+    # Expanded nodes arrive from one-hop graph traversal, not the vdb, so they carry
+    # no similarity. Embed them against the SAME retrieval_query used for the initial
+    # vdb query so every node has a comparable cosine score for the reranker's fine
+    # ordering. bge-m3 embeddings are CLS-pooled + L2-normalized, so cosine == dot.
+    await _attach_missing_distances(node_data, retrieval_query, entities_vdb.embedding_func)
+    logger.info(
+        f"Local query uses {len(node_data)} entites, {len(use_relations)} relations"
+    )
+    # Snapshot ALL candidates the reranker actually sees (initial vdb retrieval + one-hop
+    # expansion), BEFORE rerank mutates/summarizes descriptions. This is what the per-sample
+    # JSON reports as retrieved_entities, each with its similarity (now incl. expanded nodes).
+    # No separate log line here: dual_passage_rerank's "Rerank candidates" (name+deg+sim) is
+    # the same set and more informative.
     retrieved_entities = [
         {
             "entity": n["entity_name"],
@@ -566,19 +603,13 @@ async def _build_local_query_context(
             "degree": n.get("rank"),
             "description": n.get("description"),
         }
-        for n in node_datas
+        for n in node_data
     ]
-    node_datas, use_relations = await nodes_expansion(
-        node_datas, query_param, knowledge_graph_inst, top_k=query_param.top_k_expansion
-    )
-    logger.info(
-        f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations"
-    )
     # Generate context sections
-    entities_context, relations_context = generate_context_sections(node_datas, use_relations)
+    entities_context, relations_context = generate_context_sections(node_data, use_relations)
 
     # Rerank the nodes based on visual-language model (VLM) scores.
-    reranked_nodes, reranked_edges = await dual_passage_rerank(query_image, query_text, node_datas, use_model_func, knowledge_graph_inst, query_param.vlm_weight)
+    reranked_nodes, reranked_edges = await dual_passage_rerank(query_image, query_text, node_data, use_model_func, knowledge_graph_inst, query_param.vlm_weight, topn=query_param.top_k_rerank)
     rerank_entities_context, rerank_relations_context = generate_context_sections(reranked_nodes, reranked_edges)
     logger.info(
         f"After reranking Local query uses {len(reranked_nodes)} entites, {len(reranked_edges)} relations"

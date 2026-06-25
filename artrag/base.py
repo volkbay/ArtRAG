@@ -21,6 +21,7 @@ class QueryParam:
     response_type: str = "Include context e.g. Cultural, Historical and theme in your generated description. Keep your generated description strictly under 30 words. "
     top_k: int = 5              # entities from the vdb (initial retrieval) + naive chunks
     top_k_expansion: int = 5    # one-hop edges kept when expanding retrieved nodes
+    top_k_rerank: int = 5       # entities kept after VLM/degree reranking (final context)
     max_token_for_text_unit: int = 1000
     max_token_for_global_context: int = 1000
     max_token_for_local_context: int = 1000

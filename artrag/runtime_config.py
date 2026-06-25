@@ -23,15 +23,21 @@ class Settings:
     # Retrieval / vdb
     cosine_threshold: float = 0.2
     # Reranking (prunning.py)
+    rerank_strategy: str = "full"   # "full" (listwise) | "categorical" (pointwise graded)
+    rerank_batch_size: int = 12     # entities per VLM call in categorical reranking
+    rerank_score_threshold: float = 0.5  # categorical: keep nodes with final_score >= this (0-1)
     rerank_blurb_words: int = 80
     context_word_budget: List[int] = field(
         default_factory=lambda: [300, 250, 200, 150, 100]
     )
-    # BART summarizer
-    bart_model_path: str = "./bin/pretrained/bart-large-cnn"
+    rerank_max_attempts: int = 3
+    # Summarizer (BART by default; InternVL3 path also supported)
+    summarizer_model_path: str = "./bin/pretrained/bart-large-cnn"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     # Where the general-flow lightrag.log is written (None -> working_dir, legacy).
     log_dir: str = None
+    # Diagnostic: log a VRAM snapshot at each model load / generation / rerank stage.
+    log_gpu_memory: bool = False
 
 
 settings = Settings()
@@ -64,9 +70,20 @@ def configure(cfg) -> None:
     budget = _get("rerank.context_word_budget", None)
     if budget is not None:
         settings.context_word_budget = list(budget)
-    bart = _get("models.bart", None)
-    if bart is not None:
-        settings.bart_model_path = str(bart)
+    settings.rerank_strategy = str(_get("rerank.strategy", settings.rerank_strategy))
+    settings.rerank_batch_size = int(
+        _get("rerank.batch_size", settings.rerank_batch_size)
+    )
+    settings.rerank_score_threshold = float(
+        _get("rerank.score_threshold", settings.rerank_score_threshold)
+    )
+    settings.rerank_max_attempts = int(
+        _get("rerank.max_attempts", settings.rerank_max_attempts)
+    )
+    summarizer = _get("models.summarizer", None)
+    if summarizer is not None:
+        settings.summarizer_model_path = str(summarizer)
     log_dir = _get("log_dir", None)
     if log_dir is not None:
         settings.log_dir = str(log_dir)
+    settings.log_gpu_memory = bool(_get("gpu.log_memory", settings.log_gpu_memory))

@@ -792,8 +792,8 @@ Your goal is to rank them in order of how useful they are for explaining the pai
 
 #######
 Output:
-Provide the reordered full list of all entity numbers in order of relevance from high to low, separated by commas. Do not output anything else. Double-check if all the entity indices are included and they are not duplicated.
-Example Output:
+There are exactly {n_entities} entities, numbered 1 to {n_entities}. Output EVERY number from 1 to {n_entities} exactly once, reordered by relevance from high to low and separated by commas. The output must be a permutation of 1..{n_entities}: do not skip any number, do not repeat any number, and do not add numbers outside this range. Output nothing else (no words, no explanation).
+Example (for 5 entities):
 3, 1, 5, 2, 4
 
 ##########
@@ -802,7 +802,30 @@ Example Output:
 {Metadata}
 ###########
 
----Entities list---
+---Entities list (rank all {n_entities})---
+{entities}
+# ###########
+"""
+
+PROMPTS["rerank_classify"]="""
+You are an expert in art history and cultural analysis. Judge how relevant each retrieved entity is for explaining the given painting — its meaning, content, artistic significance, style, themes, figures, and historical/cultural context — using BOTH the painting's image and its metadata.
+
+Label EVERY entity with exactly one of: related, neutral, unrelated.
+- related: clearly helps explain THIS painting (its content, context, style, themes, figures, movement, or art-historical significance), even if the wording differs from the metadata.
+- neutral: possibly or tangentially relevant; you cannot confirm strong relevance.
+- unrelated: does not help explain this painting.
+
+Output one line per entity as "<number>: <label>", covering every number shown, and nothing else.
+Example:
+1: related
+2: unrelated
+3: neutral
+
+---Painting Metadata---
+{Metadata}
+###########
+
+---Entities (label all {n_entities})---
 {entities}
 # ###########
 """

@@ -86,6 +86,58 @@ def remove_sample_logfile(handler: logging.Handler) -> None:
     logger.removeHandler(handler)
     handler.close()
 
+def log_gpu_memory(tag: str) -> None:
+    """Log a one-line VRAM snapshot at `tag`, gated by settings.log_gpu_memory.
+
+    Reports both PyTorch's view and the device's view so the gap is visible:
+      * alloc   = tensors currently live in PyTorch
+      * peak    = max alloc since the last reset_peak_memory_stats (the forward's high-water
+                  mark — this is what actually OOMs, not the resting `alloc`)
+      * reserved= PyTorch's cache (alloc + reserved-but-free)
+      * used/total = whole-device (nvidia-smi view); used-reserved ≈ other procs/driver.
+    """
+    from .runtime_config import settings
+
+    if not getattr(settings, "log_gpu_memory", False):
+        return
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        dev = torch.cuda.current_device()
+        free, total = torch.cuda.mem_get_info(dev)
+        gb = 1024 ** 3
+        logger.info(
+            "VRAM [%s] alloc=%.2f peak=%.2f reserved=%.2f | device used=%.2f/%.2f free=%.2f GiB",
+            tag,
+            torch.cuda.memory_allocated(dev) / gb,
+            torch.cuda.max_memory_allocated(dev) / gb,
+            torch.cuda.memory_reserved(dev) / gb,
+            (total - free) / gb,
+            total / gb,
+            free / gb,
+        )
+    except Exception as e:  # diagnostics must never break the run
+        logger.debug("VRAM probe failed at %s: %s", tag, e)
+
+
+def reset_gpu_peak() -> None:
+    """Reset PyTorch's peak-allocation counter so the next log_gpu_memory `peak` reflects
+    only the work since this call (e.g. one rerank forward). No-op unless logging is on."""
+    from .runtime_config import settings
+
+    if not getattr(settings, "log_gpu_memory", False):
+        return
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
     """
     Compute a unique ID for a given content string.
@@ -126,10 +178,6 @@ def convert_response_to_json(response: str) -> dict:
 
 def compute_args_hash(*args):
     return md5(str(args).encode()).hexdigest()
-
-
-def compute_mdhash_id(content, prefix: str = ""):
-    return prefix + md5(content.encode()).hexdigest()
 
 
 def limit_async_func_call(max_size: int, waitting_time: float = 0.0001):

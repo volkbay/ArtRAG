@@ -21,7 +21,8 @@ from tenacity import (
 from torchvision.transforms.functional import InterpolationMode
 
 from .base import BaseKVStorage
-from .utils import compute_args_hash, logger, wrap_embedding_func_with_attrs
+from .utils import (compute_args_hash, log_gpu_memory, logger,
+                    reset_gpu_peak, wrap_embedding_func_with_attrs)
 from .runtime_config import settings
 
 # Try to load .env file if python-dotenv is available
@@ -369,6 +370,7 @@ def initialize_hf_text_encoder(model_name, device: str = "cpu"):
 
     text_encoder.to(device)
     text_encoder.eval()
+    log_gpu_memory("after bge-m3 load")
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -555,7 +557,8 @@ def initialize_hf_vision_pipeline(model_name):
     hf_model, hf_tokenizer = initialize_hf_model(model_name_norm)
     hf_model.to(device_str)
     hf_model.eval()
-    
+    log_gpu_memory("after InternVL3 load")
+
     def vision_inference(image, prompt: str = "Describe this image"):
         """Process image and prompt through InternVLChatModel."""
         try:            
@@ -580,6 +583,9 @@ def initialize_hf_vision_pipeline(model_name):
             #     print(f'DEBUG - 3.Type of pixel_values: {pixel_values.dtype}, shape: {pixel_values.shape}')
             
             # Generate response using the model's generate method.
+            # Reset the peak counter so the snapshot below reports THIS forward's high-water
+            # mark (the eager-attention score matrix is what spikes / OOMs).
+            reset_gpu_peak()
             with torch.no_grad():
                 generation_config = dict(max_new_tokens=1024, do_sample=True)
                 response = hf_model.chat(
@@ -588,6 +594,7 @@ def initialize_hf_vision_pipeline(model_name):
                     tokenizer=hf_tokenizer,
                     generation_config=generation_config,
                 )
+            log_gpu_memory(f"after InternVL3 generate ({pixel_values.shape[0]} tiles)")
             return response if isinstance(response, str) else str(response)
         except AttributeError:
             # Fallback if chat method is not available.
