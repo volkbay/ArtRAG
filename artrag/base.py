@@ -17,8 +17,10 @@ T = TypeVar("T")
 class QueryParam:
     mode: Literal["local", "global", "hybrid", "naive"] = "global"
     only_need_context: bool = False
-    # response_type: str = "Keep your generated description strictly under 15 words."
-    response_type: str = "Include context e.g. Cultural, Historical and theme in your generated description. Keep your generated description strictly under 30 words. "
+    # Length/format guidance injected into the generation system prompt. REPRISE no
+    # longer caps at 30 words (that crushed the content/context detail we want); the
+    # real value is set from cfg.query.response_type and threaded in by the run script.
+    response_type: str = "Write a clear, well-organized description in flowing prose. Be thorough and specific, but avoid repetition and filler. There is no strict word limit."
     top_k: int = 5              # entities from the vdb (initial retrieval) + naive chunks
     top_k_expansion: int = 5    # one-hop edges kept when expanding retrieved nodes
     top_k_rerank: int = 5       # entities kept after VLM/degree reranking (final context)

@@ -784,10 +784,81 @@ Do not include information where the supporting evidence for it is not provided.
 
 
 
+# ---------------------------------------------------------------------------
+# REPRISE two-pass generation (data_type="raw_sample").
+# The project's hypothesis is to retrieve reinterpreted paintings by matching
+# CONTENT and CONTEXT separately, so generation is split into two focused passes
+# instead of one blended Content/Form/Context answer:
+#   * content -> grounded in the IMAGE (what is visibly depicted + how it looks).
+#   * context -> grounded in the rank-ordered retrieved KG (background facts).
+# Each pass gets only the instructions and grounding relevant to its half, so the
+# two texts stay cleanly disentangled and the knowledge space stays controlled.
+# ---------------------------------------------------------------------------
+PROMPTS["reprise_content_response"] = """---Role---
+You are an art expert describing the CONTENT of a painting. "Content" is everything that is visually present in the image:
+- Subjects, figures, objects, and the actions or scene depicted.
+- Symbols, icons, attributes, and emblematic details, and what each one denotes within the picture.
+- Photometric and formal features: colour palette, light and shadow, composition and spatial arrangement, perspective, brushwork, and texture.
+
+---Goal---
+Describe ONLY the content of this painting, grounded first and foremost in what you can actually SEE in the image, supported by the metadata. Be concrete and specific: name the figures and objects, where they are placed, what they are doing, and the notable visual and symbolic details.
+
+You may use the retrieved context below ONLY to correctly NAME or identify something that is visibly depicted (for example, which mythological figure a depicted person represents, or what a depicted object symbolises). Do NOT add historical, biographical, movement, or period background here — that belongs to the separate Context description.
+
+Do not invent visual details that are not present in the image. Do not state outside facts that the image, metadata, or retrieved context do not support.
+
+---Target response length and format---
+
+{response_type}
+
+---Painting metadata---
+
+{metadata}
+
+---Retrieved context (use ONLY to identify depicted subjects/symbols)---
+
+{context_data}
+"""
+
+PROMPTS["reprise_context_response"] = """---Role---
+You are an art expert describing the CONTEXT of a painting. "Context" is the background that is NOT directly visible in the image:
+- The art movement / school and the style the work belongs to.
+- The artist and relevant biographical facts.
+- The timeframe / historical period and the cultural, intellectual, or religious setting.
+- The themes and influences relevant to the work.
+
+---Goal---
+Write the contextual background for this painting, grounding EVERY claim in the retrieved knowledge-graph context below and in the metadata.
+
+The retrieved entities and relationships are ordered by relevance: the FIRST entities are the most relevant. Rely on them most heavily and let later ones add only supporting detail. Prefer the wording and facts already present in the retrieved descriptions, and use the EXACT artist names, movements, periods, and techniques they mention (do not paraphrase proper nouns).
+
+Treat the retrieved context as the authoritative source. Do NOT introduce attributions, dates, movements, or historical facts that the retrieved context and metadata do not support, and do not rely on outside knowledge to fill gaps — if the context does not cover something, leave it out rather than inventing it. Do not describe what is visually depicted here — that belongs to the separate Content description.
+
+The painting's title and artist are given in the metadata: use them EXACTLY and never rename or re-identify the work as a different painting, even if it resembles another one you know.
+
+---Target response length and format---
+
+{response_type}
+
+---Painting metadata---
+
+{metadata}
+
+---Retrieved context (entities and relationships, most relevant first)---
+
+{context_data}
+"""
+
+
 PROMPTS["rerank_entities"]="""
-You are an expert in art history and cultural analysis. Your task is to evaluate the following retrieved entities and determine their relevance for explaining the given painting.
-The painting's metadata and visual feature is provided. These entities include artistic movements, historical contexts, themes, and related figures.
-Your goal is to rank them in order of how useful they are for explaining the painting’s meaning, artistic significance, and cultural context.
+You are an expert in art history and cultural analysis. You are given a painting (its image and metadata) and a numbered list of candidate knowledge-graph entities. Each entity is shown as "<number>. <entity name>: <entity description>". These entities include artistic movements, historical contexts, themes, and related figures.
+
+Your task is to rank the entities by how useful they are for explaining THIS painting — its meaning, content, artistic significance, style, themes, figures, and cultural/historical context.
+
+IMPORTANT — judge from the EVIDENCE PROVIDED, not from outside knowledge:
+- Decide each entity's relevance PRIMARILY from its provided description, read together with the painting's image and metadata.
+- Do NOT rely on facts you happen to know about an entity that are not stated in its description. A familiar-looking name whose description does not connect to this painting is LESS relevant — rank it low even if you recognize it.
+- An entity is highly relevant when its description overlaps with what the image/metadata show, or with the painting's artist, movement, period, themes, or subject matter.
 
 
 #######
@@ -802,18 +873,24 @@ Example (for 5 entities):
 {Metadata}
 ###########
 
----Entities list (rank all {n_entities})---
+---Entities to rank (each shown as "number. name: description"; rank all {n_entities})---
 {entities}
 # ###########
 """
 
 PROMPTS["rerank_classify"]="""
-You are an expert in art history and cultural analysis. Judge how relevant each retrieved entity is for explaining the given painting — its meaning, content, artistic significance, style, themes, figures, and historical/cultural context — using BOTH the painting's image and its metadata.
+You are an expert in art history and cultural analysis. You are given a painting (its image and metadata) and a numbered list of candidate knowledge-graph entities. Each entity is shown as "<number>. <entity name>: <entity description>".
+
+Judge how relevant each entity is for explaining THIS painting — its meaning, content, artistic significance, style, themes, figures, and historical/cultural context.
+
+IMPORTANT — judge from the EVIDENCE PROVIDED, not from outside knowledge:
+- Decide relevance PRIMARILY from each entity's provided description, read together with the painting's image and metadata.
+- Do NOT rely on facts about an entity that are not stated in its description. A familiar-looking name whose description does not connect to this painting is NOT "related".
 
 Label EVERY entity with exactly one of: related, neutral, unrelated.
-- related: clearly helps explain THIS painting (its content, context, style, themes, figures, movement, or art-historical significance), even if the wording differs from the metadata.
-- neutral: possibly or tangentially relevant; you cannot confirm strong relevance.
-- unrelated: does not help explain this painting.
+- related: the entity's description clearly ties it to THIS painting (its content, context, style, themes, figures, movement, or art-historical significance), even if the wording differs from the metadata.
+- neutral: the description is only loosely or possibly connected; you cannot confirm strong relevance from it.
+- unrelated: the description does not connect to this painting.
 
 Output one line per entity as "<number>: <label>", covering every number shown, and nothing else.
 Example:
@@ -825,7 +902,7 @@ Example:
 {Metadata}
 ###########
 
----Entities (label all {n_entities})---
+---Entities to label (each shown as "number. name: description"; label all {n_entities})---
 {entities}
 # ###########
 """

@@ -456,8 +456,63 @@ async def local_query(
             use_model_func,
         )
 
+    # REPRISE two-pass generation: produce TWO separate descriptions so that content
+    # and context stay cleanly disentangled (the project's content/context retrieval
+    # hypothesis). Content is grounded in the image; Context is grounded in the
+    # rank-ordered retrieved KG. Each half has its own focused prompt, so neither
+    # bleeds the other's knowledge in. Returns response as {"content", "context"}.
+    if query_param.data_type == "raw_sample":
+        content_sys = PROMPTS["reprise_content_response"].format(
+            context_data=rerank_context, response_type=query_param.response_type, metadata=metadata
+        )
+        context_sys = PROMPTS["reprise_context_response"].format(
+            context_data=rerank_context, response_type=query_param.response_type, metadata=metadata
+        )
+        # Pass-specific user turns. Do NOT reuse the generic cfg.prompt here ("...context
+        # and content perspective..."): it pulls BOTH passes toward a blended answer and
+        # makes the content pass spill into historical context. The metadata is already in
+        # each system prompt, so the user turn only has to point the model at the one half.
+        content_user = (
+            "Describe the CONTENT of this painting: the figures, objects, actions, symbols "
+            "and icons, and the visual and formal features (colour, light, composition, "
+            "brushwork) visible in the image. Do not give historical or biographical background."
+        )
+        context_user = (
+            "Describe the CONTEXT of this painting: its art movement, artist, timeframe, and "
+            "cultural/historical background, grounded in the retrieved context provided. Do not "
+            "describe what is visually depicted."
+        )
+        if isinstance(input_, dict):
+            query_image = input_["image"]
+            content_resp = await use_model_func(content_user, system_prompt=content_sys, query_image_path=query_image)
+            context_resp = await use_model_func(context_user, system_prompt=context_sys, query_image_path=query_image)
+        else:
+            content_resp = await use_model_func(content_user, system_prompt=content_sys)
+            context_resp = await use_model_func(context_user, system_prompt=context_sys)
+
+        def _clean(resp, sys_prompt, user_text):
+            if len(resp) > len(sys_prompt):
+                resp = (
+                    resp.replace(sys_prompt, "")
+                    .replace(user_text, "")
+                    .replace("<system>", "")
+                    .replace("</system>", "")
+                    .strip()
+                )
+            return resp
+
+        response = {
+            "content": _clean(content_resp, content_sys, content_user),
+            "context": _clean(context_resp, context_sys, context_user),
+        }
+        logger.info("Generated two-pass description: content=%d words, context=%d words",
+                    len(response["content"].split()), len(response["context"].split()))
+        logger.debug("Content description:\n%s", response["content"])
+        logger.debug("Context description:\n%s", response["context"])
+        return response, beforererank_context, rerank_context, struct
+
     # Select prompt template based on data type and shot number
-    if query_param.data_type in ["SemArtv2", "Artpedia", "raw_sample"]:
+    if query_param.data_type in ["SemArtv2", "Artpedia"]:
         if query_param.shot_number == 1:
             sys_prompt_temp = PROMPTS["rag_SemArtv2_1-shot_incontext_response"]
         elif query_param.shot_number == 2:
