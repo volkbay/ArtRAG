@@ -337,13 +337,28 @@ def initialize_hf_model(model_name):
         model_class.all_tied_weights_keys = all_tied_weights_keys
         model_class._all_tied_weights_keys_patch_applied = True
 
+    # Attention kernel selection. InternVL3's modeling code only knows
+    # flash_attention_2 (when flash-attn is installed) vs. eager, and hard-codes
+    # the LLM to *eager* otherwise -- the memory-hungry path that materializes the
+    # full heads x seq^2 score matrix and OOMs at large rerank top_k. We pass
+    # use_flash_attn only for the flash path, then promote the LLM to SDPA (a
+    # drop-in, math-equivalent, memory-efficient kernel) when SDPA is requested.
+    attn_impl = getattr(settings, "attn_implementation", "sdpa")
     hf_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         device_map=None,
         trust_remote_code=True,
         local_files_only=True,
         low_cpu_mem_usage=False,
+        use_flash_attn=(attn_impl == "flash_attention_2"),
     )
+    if attn_impl != "flash_attention_2":
+        lm = getattr(hf_model, "language_model", None)
+        if lm is not None:
+            try:
+                lm.set_attn_implementation(attn_impl)   # transformers >= 4.48
+            except Exception:
+                lm.config._attn_implementation = attn_impl
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     hf_model = hf_model.to(device)

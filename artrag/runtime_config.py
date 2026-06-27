@@ -34,6 +34,10 @@ class Settings:
     # Summarizer (BART by default; InternVL3 path also supported)
     summarizer_model_path: str = "./bin/pretrained/bart-large-cnn"
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    # Attention kernel for the InternVL3 LLM: "sdpa" (PyTorch memory-efficient,
+    # default), "eager" (materializes the full heads x seq^2 score matrix —
+    # OOM-prone at large top_k), or "flash_attention_2" (needs flash-attn built).
+    attn_implementation: str = "sdpa"
     # Where the general-flow lightrag.log is written (None -> working_dir, legacy).
     log_dir: str = None
     # Diagnostic: log a VRAM snapshot at each model load / generation / rerank stage.
@@ -83,6 +87,9 @@ def configure(cfg) -> None:
     summarizer = _get("models.summarizer", None)
     if summarizer is not None:
         settings.summarizer_model_path = str(summarizer)
+    settings.attn_implementation = str(
+        _get("models.attn_implementation", settings.attn_implementation)
+    )
     log_dir = _get("log_dir", None)
     if log_dir is not None:
         settings.log_dir = str(log_dir)
